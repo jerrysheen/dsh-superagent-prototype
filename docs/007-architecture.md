@@ -316,6 +316,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/core/index.ts` | The core's exports |
 | `src/app/runtime.ts` | The Runtime, the composition root, with its start and stop |
 | `src/app/session-hub.ts`, `src/app/session-hub-http.ts`, `src/client/session-hub.tsx` | Session-mode coordination state, local API and user-operated registration/dispatch/receipt UI |
+| `src/app/session-router.ts` | Bounded session-card inference through DSH's LLM service, model-output validation and recommendation audit metadata |
 | `src/app/setup.ts` | Setup, and `setupChanged`, whether a save changes a field setup reads |
 | `src/app/passes.ts` | Passes, the pass scheduler |
 | `src/app/outbox.ts` | The Outbox: the Engine's `Outbox` port, the receipts and the `reply` effects that send them |
@@ -440,6 +441,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/deployment.spec.ts`, `tests/environment.spec.ts`, `tests/index.spec.ts` | The plugin configuration and setup, the agent's process environment, the plugin entry |
 | `tests/service-script.spec.ts` | `scripts/dsh-superagent` against fake `ps`, `tmux` and `dsh` |
 | `tests/session-hub.spec.ts` | Same-title project/mode disambiguation, identity checks, request/receipt deduplication, completion evidence and restart persistence |
+| `tests/session-router.spec.ts` | Model routing composition, clarification, unsafe-output rejection, in-flight deduplication, persistence and stale-context checks |
 | `tests/client.spec.tsx`, `tests/navigation.spec.ts`, `tests/controls.spec.tsx` | The client plugin's registration and polling, Session navigation and route memory, the local controls, and the panel's imports, which have no cycle |
 | `tests/panel-overview.spec.tsx`, `panel-source.spec.tsx`, `panel-trigger.spec.tsx`, `panel-eval.spec.tsx`, `panel-execution.spec.tsx` | Each page of the panel, against a fake management API answered by route |
 | `tests/panel-settings.spec.tsx`, `panel-prompts.spec.tsx`, `panel-deployment.spec.tsx`, `panel-panel.spec.tsx` | The settings groups, drafts and history, the prompts, the Deployment page, and the panel's search, glossary and route memory |

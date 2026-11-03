@@ -31,6 +31,7 @@ import { Effects } from './effects.ts'
 import { Prompts } from './prompts.ts'
 import { registerHttp, type HttpHost } from './http.ts'
 import { SessionHub } from './session-hub.ts'
+import { SessionRouter } from './session-router.ts'
 import { registerSessionHub } from './session-hub-http.ts'
 import type { LinkTarget } from './views/records.ts'
 import { candidateCard, repliedTo, sourceLink, type LinkHost } from './links.ts'
@@ -86,6 +87,7 @@ export class Runtime extends Service implements SourceHost {
   private readonly toolHost: MainToolsHost & ExecutorToolsHost
   /** Non-zero while a main-Session tool is executing an Engine command, suppressing self-triggered domain event notices. */
   private quiet = 0
+  private sessionHub?: SessionHub
   constructor(ctx: Context, readonly machine: Machine, restart: () => void) {
     super(ctx, 'orchestrator')
     const runtime = this
@@ -204,7 +206,10 @@ export class Runtime extends Service implements SourceHost {
     // Register management HTTP routes before setup completes so operators can fix setup problems in the UI.
     this.disposers.push(registerHttp(this.ctx, this.httpHost()))
     if (this.machine.coordinationMode === 'sessions') {
-      this.disposers.push(registerSessionHub(this.ctx, new SessionHub(this.store)))
+      const router = new SessionRouter({ llm: this.ctx.llm, model: () => this.store.settings().eval.model,
+        timeoutMs: () => this.store.settings().eval.timeoutSeconds * 1000, lifetime: this.lifetime })
+      this.sessionHub = new SessionHub(this.store, router)
+      this.disposers.push(registerSessionHub(this.ctx, this.sessionHub))
       this.runtimeHealth.set({ state: 'ready', detail: 'AI session coordinator ready; repository execution is disabled', at: now() })
       return
     }
@@ -236,6 +241,7 @@ export class Runtime extends Service implements SourceHost {
   stop(): Promise<void> { return this.stopping ??= this.shutdown() }
   private async shutdown(): Promise<void> {
     this.closingFlag = true; const passes = this.passes.stop(); this.stopped.abort()
+    await this.sessionHub?.idle()
     try {
       this.assessor.stop()
       const ids = [this.masterId, ...this.store.tickets.list().map(ticket => workerSessionId(ticket.id))]

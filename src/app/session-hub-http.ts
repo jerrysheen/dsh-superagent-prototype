@@ -25,7 +25,7 @@ export function registerSessionHub(ctx: Context, hub: SessionHub): () => void {
     try {
       if (req.method === 'GET' && path === '/snapshot') { reply(200, hub.snapshot()); return }
       if (req.method === 'POST' && path === '/sessions') { reply(200, hub.register(await body())); return }
-      if (req.method === 'POST' && path === '/tasks') { reply(200, hub.submit(await body())); return }
+      if (req.method === 'POST' && path === '/tasks') { reply(200, await hub.submitRouted(await body())); return }
       const receipt = /^\/tasks\/([^/]+)\/receipts$/.exec(path)
       if (req.method === 'POST' && receipt) { reply(200, hub.receipt(decodeURIComponent(receipt[1]!), await body())); return }
       if (req.method === 'POST' && path === '/clear-demo') { reply(200, hub.clearDemo()); return }

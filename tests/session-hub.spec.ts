@@ -9,7 +9,7 @@ import { registerSessionHub } from '../src/app/session-hub-http.ts'
 let directory: string, store: Store, hub: SessionHub
 const card = (uid: string, projectId: string, mode: 'chat' | 'work' = 'work'): SessionCard => ({
   uid, provider: 'test', surface: 'chatgpt', mode, projectId, projectName: projectId, title: 'Same title', threadId: uid,
-  scope: 'unknown', identity: 'operator_confirmed', capabilities: { read: 'import', send: 'user' }, evidence: ['test fixture'], origin: 'test',
+  scope: 'unknown', summary: '', identity: 'operator_confirmed', capabilities: { read: 'import', send: 'user' }, evidence: ['test fixture'], origin: 'test',
 })
 beforeEach(() => { directory = mkdtempSync(join(tmpdir(), 'session-hub-')); store = new Store(join(directory, 'state.sqlite')); hub = new SessionHub(store) })
 afterEach(() => { store.close(); rmSync(directory, { recursive: true, force: true }) })

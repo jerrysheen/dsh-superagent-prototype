@@ -18,6 +18,7 @@ async function call(path: string, body?: unknown): Promise<unknown> {
 export function SessionHubPage() {
   const [snapshot, setSnapshot] = useState<Snapshot>({ sessions: [], tasks: [] })
   const [error, setError] = useState('')
+  const [routing, setRouting] = useState(false)
   const reload = useCallback(async () => {
     try { setSnapshot(await call('snapshot') as Snapshot); setError('') } catch (error) { setError(String(error)) }
   }, [])
@@ -35,9 +36,13 @@ export function SessionHubPage() {
   }
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault(); const form = event.currentTarget, data = new FormData(form)
+    if (routing) return
     const uid = String(data.get('uid') ?? ''), projectId = String(data.get('project') ?? '').trim(), mode = String(data.get('mode') ?? '')
-    if (await act('tasks', { requestId: crypto.randomUUID(), instruction: data.get('instruction'),
-      target: { ...(uid ? { uid } : {}), ...(projectId ? { projectId } : {}), ...(mode ? { mode } : {}) } })) form.reset()
+    setRouting(true)
+    try {
+      if (await act('tasks', { requestId: crypto.randomUUID(), instruction: data.get('instruction'),
+        target: { ...(uid ? { uid } : {}), ...(projectId ? { projectId } : {}), ...(mode ? { mode } : {}) } })) form.reset()
+    } finally { setRouting(false) }
   }
   const receipt = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault(); const form = event.currentTarget, data = new FormData(form)
@@ -60,10 +65,10 @@ export function SessionHubPage() {
       </form></section>
       <section><h2>分派任务</h2><form onSubmit={submit}>
         <label>任务<textarea name="instruction" required maxLength={20000} /></label>
-        <label>目标会话<select name="uid"><option value="">按项目和模式匹配唯一会话</option>{snapshot.sessions.map(card =>
+        <label>目标会话<select name="uid"><option value="">由 Router 根据任务推荐</option>{snapshot.sessions.map(card =>
           <option key={card.uid} value={card.uid}>{card.projectName ?? '非项目'} · {card.mode} · {card.title}</option>)}</select></label>
         <label>项目筛选<input name="project" /></label><label>模式筛选<select name="mode"><option value="">不限</option><option value="chat">Chat</option><option value="work">Work</option></select></label>
-        <button type="submit">准备派发</button>
+        <button type="submit" disabled={routing}>{routing ? '正在判断目标…' : '准备派发'}</button>
       </form></section>
       <section><h2>回收结果</h2><form onSubmit={receipt}>
         <label>任务<select name="task" required><option value="">请选择</option>{snapshot.tasks.filter(task => task.target && task.status !== 'needs_target' && task.status !== 'unavailable').map(task =>
@@ -77,6 +82,7 @@ export function SessionHubPage() {
     </li>)}</ul>{!snapshot.sessions.length && <p>先登记一个测试会话。登记信息不会被当作自动识别结果。</p>}</section>
     <section><h2>任务与结果（{snapshot.tasks.length}）</h2><ul className="dt-list">{snapshot.tasks.map(task => <li key={task.id} className="dt-row dt-hub-task">
       <strong>{task.request.instruction}</strong><span>{statusText[task.status]} · {task.target ? `${task.target.projectName ?? '非项目'} / ${task.target.mode} / ${task.target.title}` : '未选定会话'}</span>
+      {task.routing && <p>Router：{task.routing.reason}{task.routing.model ? `（${task.routing.model.model}）` : ''}</p>}
       {task.status === 'waiting_user' && <p>用户执行：打开以上原会话，核对项目和模式后发送任务，再回填发送结果。</p>}
       {task.status === 'needs_target' && <p>匹配结果不唯一或身份未确认；请明确目标后重新准备任务。</p>}
       {task.receipts.map(item => <div key={item.eventId}><strong>{statusText[item.status]}</strong><p>{item.result}</p>{item.evidence.map(value => <p key={value}>{value}</p>)}</div>)}
