@@ -9,6 +9,11 @@ it('accepts an absolute state directory on the host platform', () => {
   expect(Config({ stateDir }).stateDir).toBe(stateDir)
 })
 
+it('allows session coordination to be selected without changing repository mode defaults', () => {
+  expect(Config({ stateDir: '/state' }).coordinationMode).toBe('repository')
+  expect(Config({ stateDir: '/state', coordinationMode: 'sessions' }).coordinationMode).toBe('sessions')
+})
+
 it.runIf(process.platform === 'win32').each(['F:\\Agent State\\superagent', 'F:/Agent State/superagent', '\\\\server\\share\\superagent'])(
   'accepts a Windows state directory: %s', stateDir => {
     expect(Config({ stateDir }).stateDir).toBe(stateDir)

@@ -380,3 +380,15 @@ a.dt-btn, a.dt-btn:hover { text-decoration: none; }
 .dt-admission-slot { display: inline-flex; flex: none; width: 16px; }
 .dt-info-warn { color: var(--dsw-alias-state-warn-primary); }
 .dt-field-segmented { max-width: 240px; }
+.dt-session-hub { gap: 24px; padding: 24px; }
+.dt-session-hub h1 { font-size: 24px; margin: 0 0 8px; }
+.dt-session-hub h2 { font-size: 17px; margin: 0 0 14px; }
+.dt-hub-forms { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 20px; }
+.dt-hub-forms section { border: 1px solid var(--border-color, #d8dce3); padding: 18px; border-radius: 12px; }
+.dt-hub-forms form { display: grid; gap: 12px; }
+.dt-hub-forms label { display: grid; gap: 5px; font-size: 13px; }
+.dt-hub-forms input, .dt-hub-forms select, .dt-hub-forms textarea { width: 100%; box-sizing: border-box; padding: 8px; border: 1px solid var(--border-color, #cbd0d8); border-radius: 6px; background: transparent; color: inherit; }
+.dt-hub-forms textarea { min-height: 80px; resize: vertical; }
+.dt-session-hub button { cursor: pointer; padding: 8px 12px; border-radius: 6px; }
+.dt-session-hub .dt-row { display: grid; gap: 8px; }
+.dt-hub-task p { white-space: pre-wrap; overflow-wrap: anywhere; margin: 4px 0; }

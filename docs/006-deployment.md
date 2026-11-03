@@ -4,6 +4,8 @@ Use this guide to install, configure and operate dsh-superagent. It covers accou
 
 ## What runs
 
+For external AI session coordination, set `coordinationMode: sessions` on `dsh-superagent` and disable `dsh-superagent-github` and `dsh-superagent-feishu`. This mode opens a session/task dashboard and loopback `/session-hub/api/` endpoints without probing GitHub, creating repository workers, or starting the original source loops. It stores session cards and receipts in the existing local Store. It prepares target-specific messages only; real application reads and sends require an explicitly supported connector or user action. The repository deployment instructions below apply to the default `repository` mode.
+
 - **A dedicated DeepSeek Harness profile**, called `superagent` in this guide. Create it from the Web profile template. It loads the bundle and serves its panel on `127.0.0.1`. Keep it separate from the profile you work in: the plugin changes process-wide `PATH` and git settings, and its process needs independent restarts and upgrades.
 - **An agent GitHub account.** The agent comments, pushes branches and opens pull requests as this account, through a GitHub CLI signed in only as that account.
 - **Optional:** a Feishu bot for chat requests.

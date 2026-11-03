@@ -30,6 +30,8 @@ import { TextCache } from './cache.ts'
 import { Effects } from './effects.ts'
 import { Prompts } from './prompts.ts'
 import { registerHttp, type HttpHost } from './http.ts'
+import { SessionHub } from './session-hub.ts'
+import { registerSessionHub } from './session-hub-http.ts'
 import type { LinkTarget } from './views/records.ts'
 import { candidateCard, repliedTo, sourceLink, type LinkHost } from './links.ts'
 import { eventNotice, followupNotice } from './notices.ts'
@@ -176,7 +178,7 @@ export class Runtime extends Service implements SourceHost {
   context(kind: { kind: string; health: readonly string[] }): SourceContext { return sourceContextOf(this.sourceDeps, kind) }
   /** Resolved deployment; throws while waiting for setup (`!configured()`). */
   get deployment(): Deployment { return this.setup.deployment }
-  configured(): boolean { return this.setup.configured() }
+  configured(): boolean { return this.machine.coordinationMode === 'sessions' || this.setup.configured() }
   get setupProblem(): SetupProblem | undefined { return this.setup.problem }
   /** Why the Feishu bot is unavailable even though the Feishu Source configures a CLI. */
   get feishuProblem(): SetupProblem | undefined { return this.setup.feishuProblem }
@@ -201,6 +203,11 @@ export class Runtime extends Service implements SourceHost {
   private async initialize(): Promise<void> {
     // Register management HTTP routes before setup completes so operators can fix setup problems in the UI.
     this.disposers.push(registerHttp(this.ctx, this.httpHost()))
+    if (this.machine.coordinationMode === 'sessions') {
+      this.disposers.push(registerSessionHub(this.ctx, new SessionHub(this.store)))
+      this.runtimeHealth.set({ state: 'ready', detail: 'AI session coordinator ready; repository execution is disabled', at: now() })
+      return
+    }
     if (!await this.setup.run(this.store.settings())) {
       this.runtimeHealth.set({ ...health('paused', 'setupPending'), at: now() })
       return
