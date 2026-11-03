@@ -70,7 +70,9 @@ export class SessionHub {
         && (!request.target.projectId || card.projectId === request.target.projectId)
         && (!request.target.mode || card.mode === request.target.mode))
       const target = matches.length === 1 ? matches[0]! : null
-      const identified = target && target.identity !== 'unknown' && target.mode !== 'unknown'
+      // An API-addressed native thread selected explicitly does not depend on an inferred Chat/Work label.
+      const exactNativeTarget = target?.identity === 'machine_confirmed' && !!target.threadId && request.target.uid === target.uid
+      const identified = target && target.identity !== 'unknown' && (target.mode !== 'unknown' || exactNativeTarget)
       const status = !target || !identified ? 'needs_target' : target.capabilities.send === 'unavailable' ? 'unavailable' : 'waiting_user'
       const reason = !target ? 'A unique session identity is required' : !identified ? 'Session identity or mode is not confirmed'
         : status === 'unavailable' ? 'This session has no supported send capability'

@@ -27,6 +27,14 @@ it('refuses unconfirmed identities, missing targets and unavailable send capabil
   hub.register({ ...card('off', 'b'), capabilities: { read: 'unavailable', send: 'unavailable' } })
   expect(hub.submit({ requestId: 'off', instruction: 'Test', target: { uid: 'off' } }).status).toBe('unavailable')
 })
+
+it('accepts an explicitly selected machine-confirmed native thread without guessing its Chat/Work mode', () => {
+  hub.register({ ...card('native', 'a'), mode: 'unknown', identity: 'machine_confirmed' })
+  expect(hub.submit({ requestId: 'explicit', instruction: 'Test', target: { uid: 'native' } }).status).toBe('waiting_user')
+  expect(hub.submit({ requestId: 'inferred', instruction: 'Test', target: { projectId: 'a' } }).status).toBe('needs_target')
+  hub.register({ ...card('manual', 'b'), mode: 'unknown' })
+  expect(hub.submit({ requestId: 'manual', instruction: 'Test', target: { uid: 'manual' } }).status).toBe('needs_target')
+})
 it('keeps request and receipt idempotency keys bound to the original payload and target', () => {
   hub.register(card('a', 'a'))
   const input = { requestId: 'one', instruction: 'Test', target: { uid: 'a' } }, task = hub.submit(input)
