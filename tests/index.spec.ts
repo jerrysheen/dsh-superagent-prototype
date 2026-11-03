@@ -1,6 +1,22 @@
 import { expect, it, vi } from 'vitest'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { Config, type Machine } from '../src/deployment.ts'
 import { apply } from '../src/index.ts'
+
+it('accepts an absolute state directory on the host platform', () => {
+  const stateDir = join(tmpdir(), 'superagent-state')
+  expect(Config({ stateDir }).stateDir).toBe(stateDir)
+})
+
+it.runIf(process.platform === 'win32').each(['F:\\Agent State\\superagent', 'F:/Agent State/superagent', '\\\\server\\share\\superagent'])(
+  'accepts a Windows state directory: %s', stateDir => {
+    expect(Config({ stateDir }).stateDir).toBe(stateDir)
+  })
+
+it.each(['relative/state', '~/state', 'F:relative-state'])('refuses a non-absolute state directory: %s', stateDir => {
+  expect(() => Config({ stateDir })).toThrow()
+})
 
 // Stub Runtime to capture the resolved Machine settings and restart callback.
 const runtimes = vi.hoisted(() => [] as { machine: Machine; restart: () => void }[])
