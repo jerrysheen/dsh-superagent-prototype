@@ -11,6 +11,7 @@ import { spawn } from 'node:child_process'
 import { KnowledgeLibraryReader } from './knowledge-library.ts'
 import { GraphifyJobs } from './graphify-jobs.ts'
 
+/** Serves exported Graphify views and coordinates extraction jobs and local graph builds. */
 export class GraphifyService {
   readonly jobs:GraphifyJobs
   readonly expanded:GraphifyExpanded

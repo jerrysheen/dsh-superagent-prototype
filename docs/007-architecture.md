@@ -428,6 +428,43 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/client/marks.ts` | The marks of the states the views classify: a Ticket's or a Thread's stage, a Source's state and a Decision's outcome, each as a dot, an icon, a tone and a label |
 | `src/client/locales.ts` | All copy in both languages, and the glossary of [001 Domain model](001-domain.md) |
 | `src/client/client.css`, `css.d.ts` | The panel's stylesheet, loaded as text |
+| `src/app/chatgpt-source.ts` | Explicit ChatGPT source inventory and bounded source reads. |
+| `src/app/classified-knowledge.ts` | Projects knowledge derivatives into domain and topic membership. |
+| `src/app/cloud-workers.ts` | Coordinates explicitly configured cloud knowledge workers. |
+| `src/app/folder-references.ts` | Resolves project folder references without granting execution authority. |
+| `src/app/graphify-corpus.ts` | Checkpointed Graphify extraction from prepared corpus derivatives. |
+| `src/app/graphify-expanded.ts` | Bounded extraction batches sharing concept identifiers. |
+| `src/app/graphify-jobs.ts` | Extraction job state and cited result validation. |
+| `src/app/graphify-review.ts` | Cited concept alignment and cross-batch relation review. |
+| `src/app/graphify-service.ts` | Graphify exports, local builds and extraction orchestration. |
+| `src/app/knowledge-library.ts` | Validated derivative artifact queries and knowledge browsing. |
+| `src/app/knowledge-organizer.ts` | Builds bounded knowledge derivatives and filters historical content. |
+| `src/app/knowledge-relations.ts` | Topic relations derived from knowledge evidence. |
+| `src/app/knowledge-taxonomy.ts` | Domain definitions and topic classification. |
+| `src/app/knowledge-tools.ts` | Bounded knowledge lookup tools for the main Agent. |
+| `src/app/managed-work.ts` | Confirmable work cards, authorization checks and Engine admission. |
+| `src/app/project-progress.ts` | Reads maintained project progress evidence within allowed workspaces. |
+| `src/app/tool-output.ts` | Normalizes tool results for the Agent tool interface. |
+| `src/app/vision-probe.ts` | Bounded model image-input probe. |
+| `src/app/work-instruction.ts` | Derives work titles from original instructions. |
+| `src/app/worker-references.ts` | Worker reference validation and projection. |
+| `src/client/agent-chat.tsx` | Main Agent conversation and work facts. |
+| `src/client/agent-workspace.tsx` | Agent workspace views and navigation. |
+| `src/client/chatgpt-source.tsx` | Explicit ChatGPT source selection and status. |
+| `src/client/classified-knowledge-graph.css` | Styles for the classified knowledge graph. |
+| `src/client/classified-knowledge-graph.tsx` | Domain and topic knowledge graph interactions. |
+| `src/client/classified-labels.ts` | Knowledge graph labels and visibility. |
+| `src/client/classified-layout.ts` | Positions classified knowledge nodes. |
+| `src/client/cloud-workers.tsx` | Cloud knowledge worker controls and status. |
+| `src/client/graphify-window.tsx` | Embeds the exported Graphify viewer. |
+| `src/client/knowledge-library.css` | Knowledge library styles. |
+| `src/client/knowledge-library.tsx` | Topic browsing and cited knowledge entries. |
+| `src/client/managed-work.tsx` | Work card preparation, confirmation and status. |
+| `src/client/reference-textarea.tsx` | Text input with explicit reference selection. |
+| `src/client/worker-references.ts` | Worker reference display data. |
+| `src/executor/codex-format.ts` | Desktop work prompts and report parsing. |
+| `src/executor/desktop-worker.ts` | Assignment tracking through desktop-owned chats. |
+| `src/executor/native-router.ts` | Routes work to its configured native driver. |
 
 `src/sources/github.ts` and `src/sources/feishu.ts` are also the entries of the two Source plugins, built by `tsdown.config.ts` and exported in `package.json` as `./github-watch` and `./feishu-watch`. The bundle's `cordis.patch.yml` inserts the three plugins, with Feishu disabled.
 
@@ -501,6 +538,33 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/locales.spec.ts`, `tests/styles.spec.ts` | The copy in both languages, the stylesheet |
 | `tests/class-docs.spec.ts` | Every class in `src` has a JSDoc block before it |
 | `tests/docs.spec.ts` | Numbered documents link only to earlier ones, every local link resolves, no document has merge conflict markers, and this document's tables list every module and every test |
+| `tests/agent-workspace.spec.tsx` | Work facts, lazy Ticket details and main Session ownership. |
+| `tests/chatgpt-source.spec.ts` | Explicit source selection and bounded ChatGPT reads. |
+| `tests/classified-knowledge-ui.spec.tsx` | Classified graph rendering and selection. |
+| `tests/classified-knowledge.spec.ts` | Domain and topic membership projections. |
+| `tests/cloud-workers-http.spec.ts` | Cloud worker management routes. |
+| `tests/cloud-workers-ui.spec.tsx` | Cloud worker controls and visible state. |
+| `tests/cloud-workers.spec.ts` | Cloud worker scheduling and result handling. |
+| `tests/codex-command.spec.ts` | Codex command selection and literal arguments. |
+| `tests/codex-create-http.spec.ts` | Authorized native conversation creation routes. |
+| `tests/codex-format.spec.ts` | Work prompts and receipt-bound report parsing. |
+| `tests/desktop-managed-engine.spec.ts` | Managed Engine work through a synthetic desktop client. |
+| `tests/desktop-worker.spec.ts` | Desktop admission, result matching and lifecycle recovery. |
+| `tests/graphify-corpus.spec.ts` | Corpus extraction checkpoints and citation validation. |
+| `tests/graphify-expanded.spec.ts` | Shared concepts and bounded extraction batches. |
+| `tests/graphify-jobs.spec.ts` | Job state and validated extraction results. |
+| `tests/graphify-review.spec.ts` | Cited concept alignment and relation acceptance. |
+| `tests/graphify-window.spec.tsx` | Graphify viewer embedding and interactions. |
+| `tests/managed-work-engine.spec.ts` | Confirmed work cards entering the original Engine. |
+| `tests/managed-work-http.spec.ts` | Work card management and confirmation routes. |
+| `tests/managed-work-native.spec.ts` | Native target ownership and work continuation. |
+| `tests/managed-work-ui.spec.tsx` | Work card preparation, permissions and confirmation. |
+| `tests/managed-work.spec.ts` | Draft deduplication, scope revocation and authorization. |
+| `tests/reference-textarea.spec.tsx` | Reference selection and input behavior. |
+| `tests/tool-output.spec.ts` | Tool result normalization. |
+| `tests/vision-probe.spec.ts` | Bounded image-input probing. |
+| `tests/worker-references-client.spec.tsx` | Worker reference rendering. |
+| `tests/worker-references.spec.ts` | Worker reference validation. |
 
 `tests/fixtures/` holds what several tests share: `host.ts`, a simulated DeepSeek Harness host; `panel-server.ts` and `panel.tsx`, the fake management API and the panel around a page; `deployment.ts`, a resolved deployment; `git.ts`, the environment of every git the tests start, which names no repository; and `async.ts`.
 

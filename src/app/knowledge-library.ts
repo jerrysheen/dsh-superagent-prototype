@@ -33,6 +33,7 @@ const topics = publicKnowledgeTopics(), topicIds = new Set(topics.map(topic => t
 const empty = (): KnowledgeLibrary => ({ version: 1, taxonomyVersion: 1, builtAt: '', inventoryAt: '', status: 'ready', threads: [], entries: [], insights: [],
   policy: { rawTranscriptsPersisted: false, modelCalls: false, agentIntegration: false } })
 
+/** Validates and queries derived knowledge artifacts without initiating indexing or model calls. */
 export class KnowledgeLibraryReader {
   private current = empty()
   private stamp = ''

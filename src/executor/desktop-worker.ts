@@ -16,6 +16,7 @@ interface Job { ticket: Ticket; assignmentId: string; requestIds: string[]; inpu
   cancelled: boolean; timer?: ReturnType<typeof setTimeout>; cursor?: string; errors: number; interruptedAt?: number;
   final?: DesktopWorkSnapshot['latestAssistantMessage']; reportedMessageId?: string }
 
+/** Tracks Engine assignments through desktop-owned chats without acquiring a native writer. */
 export class DesktopWorker implements NativeWorkerDriver {
   private events?: NativeWorkerEvents
   private jobs = new Map<string, Job>()

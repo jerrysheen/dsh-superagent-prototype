@@ -56,6 +56,7 @@ export function validateReconciliation(value:unknown,nodes:Node[],samples:Graphi
 }
 const digest=(v:unknown)=>createHash('sha256').update(JSON.stringify(v)).digest('hex')
 const parse=(text:string)=>JSON.parse(safeKnowledgeText(text.trim().replace(/^```(?:json)?\s*\n([\s\S]*)\n```$/,'$1')))
+/** Runs bounded concept extraction batches with shared concept identifiers and validated citations. */
 export class GraphifyExpanded {
   private state:{status:string;model:typeof DEEPSEEK_GRAPH_MODEL;inputCount:number;runId?:string;tasks:{theme:string;status:string;cached?:boolean;nodes?:number;edges?:number;merges?:number;error?:string}[]}={status:'idle',model:DEEPSEEK_GRAPH_MODEL,inputCount:0,tasks:[]}
   private active?:Promise<void>

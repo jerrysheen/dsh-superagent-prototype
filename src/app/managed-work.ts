@@ -32,6 +32,7 @@ interface Proposal {
 const Proposals = record<Proposal[]>('managed-work-proposals:v1')
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 
+/** Keeps confirmable work proposals and submits authorized requests to the original Engine. */
 export class ManagedWork {
   private currentRequest?: { id: string; instruction: string; hasImages: boolean }
   private confirmation?: Promise<unknown>

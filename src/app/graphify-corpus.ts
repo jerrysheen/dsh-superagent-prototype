@@ -75,6 +75,7 @@ export function planCorpusTasks(plan:Plan,promptHash:string){
   for(const doc of plan.documents){if(group.length&&(group.length>=4||size+doc.chars>24000))flush();group.push(doc);size+=doc.chars}flush();return tasks
 }
 
+/** Coordinates checkpointed Graphify extraction from explicitly prepared corpus derivatives. */
 export class GraphifyCorpus {
   private state?:State
   private plan?:Plan

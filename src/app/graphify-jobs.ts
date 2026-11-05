@@ -44,6 +44,7 @@ export const GRAPHIFY_PROMPT=`你负责 Graphify 风格的概念与关系提取�
 从具体对象/机制提取概念，不要把领域、会话标题或“优化/测试”当成概念；相同概念使用稳定英文 snake_case id，不能混同 GC/GC.Alloc、WASM/WebCIL、Mono/IL2CPP、CPU/GPU。保留范围差异。一个概念可属于多个给定领域。明确关系方向；不能因同场出现就断言依赖或因果。仅在 supplied answer 明确表达关系时用 EXTRACTED(1.0)；合理推断用 INFERRED，自估分数；不确定用 AMBIGUOUS。引用必须是某条输入 question 或 answer 的逐字连续片段。每条边的证据须覆盖两端概念。历史内容尚未独立验证。无需给每对概念连线，允许孤立概念；各输入须由节点、关系或 unassignedEntryIds 交代。
 最多20概念、25关系，优先少而准确，解释用中文。格式：{"nodes":[{"id":"managed_heap","label":"托管堆","domainIds":["runtime"],"entryIds":["输入ID"]}],"edges":[{"source":"概念ID","target":"概念ID","relation":"uses|depends_on|implements|measures|diagnoses|contrasts_with|related_to|contradicts","confidence":"EXTRACTED|INFERRED|AMBIGUOUS","confidence_score":1.0,"evidence":[{"entryId":"输入ID","quote":"逐字证据至少8字"}],"explanation":"关系理由和适用边界"}],"unassignedEntryIds":[]}`
 
+/** Tracks bounded extraction jobs, validates cited results, and requests graph rebuilds. */
 export class GraphifyJobs {
   private state:{status:string;model:RoleModel|null;tasks:{theme:string;status:string;cached?:boolean;nodes?:number;edges?:number;error?:string}[];startedAt?:string}={status:'idle',model:null,tasks:[]}
   private active?:Promise<void>
