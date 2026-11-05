@@ -4,8 +4,22 @@ import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import { agentEvents, installModelSelection, type Agent, type ModelSelection, type ModelSelectionRef } from '@deepseek-ai/dsh-agent'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
-import { initializeRoleModel } from '../src/app/role-models.ts'
+import { initializeRoleModel, initializeMasterModel } from '../src/app/role-models.ts'
 const contexts: Context[] = []
+
+it('switches a resumed master and follows later role settings without leaking inherited effort', async () => {
+  const { ctx, agent, request, record } = await fixture()
+  record({ provider: 'old', model: 'previous', reasoningEffort: ReasoningEffortId('high') })
+  let configured = { provider: 'elex-deepseek', model: 'deepseek' }
+  await initializeMasterModel(ctx, agent, () => configured)
+  await ctx.systemPrompt.assemble()
+  expect(await request()).toEqual(configured)
+  configured = { provider: 'other', model: 'next' }
+  // A setting change cannot split an already assembled request.
+  expect(await request()).toEqual({ provider: 'elex-deepseek', model: 'deepseek' })
+  await ctx.systemPrompt.assemble()
+  expect(await request()).toEqual(configured)
+})
 afterEach(async () => { await Promise.all(contexts.splice(0).map(ctx => ctx.fiber.dispose())); vi.restoreAllMocks() })
 async function fixture() {
   const ctx = new Context(); contexts.push(ctx); await ctx.plugin(SystemPrompt)

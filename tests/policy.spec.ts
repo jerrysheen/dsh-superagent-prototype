@@ -8,6 +8,12 @@ import { githubKind } from '../src/sources/github.ts'
 import type { Thread, Ticket, Trigger } from '../src/core/index.ts'
 
 const MEMBER = 'ou_alice'
+it('accepts Windows absolute executor directories while rejecting drive-relative paths', () => {
+  for (const directory of ['F:\\Agent Work', 'F:/Agent Work', '\\\\server\\share\\work']) {
+    expect(SettingsSchema.parse({ executor: { directory } }).executor.directory).toBe(directory)
+  }
+  expect(() => SettingsSchema.parse({ executor: { directory: 'F:relative' } })).toThrow()
+})
 const CHAT = 'oc_team'
 const OBSERVED = 'oc_1111111111111111111111111111'
 const feishuSource = (config: { chats: { chatId: string; listen: 'mentions' | 'all' }[]; directMessages: boolean }, enabled = true) => ({ enabled, config })

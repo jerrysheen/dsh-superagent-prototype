@@ -40,6 +40,9 @@ export async function mount(dictionary: Record<string, string> = zh) {
   root = createRoot(container)
   await act(async () => { root!.render(<Panel t={translator(dictionary)} />) })
   await settle()
+  // Existing management tests exercise the preserved work/status view.
+  const work = [...container!.querySelectorAll<HTMLButtonElement>('.dt-overview-switch button')].find(button => button.textContent === '工作与状态')
+  if (work) { await act(async () => work.click()); await settle() }
 }
 export async function remount(dictionary: Record<string, string> = zh) { unmount(); await mount(dictionary) }
 

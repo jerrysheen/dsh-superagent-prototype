@@ -9,11 +9,13 @@ import type { AssessmentOutcome, Assignment, EngineForExecutor, Execution, Execu
   from '../core/index.ts'
 import type { Machine } from '../deployment.ts'
 import { runAsWorker, verifyDirectory } from '../infra/environment.ts'
+import { powershell, windowsSystem } from '../infra/native-command.ts'
 import type { Settings } from '../policy.ts'
 import type { Store } from '../app/store.ts'
 import { Later, type Effects } from '../app/effects.ts'
 import { executionRoot, type Variable } from '../app/execution-environment.ts'
 import type { Sessions } from '../app/sessions.ts'
+import type { NativeWorkerDriver } from './native-worker.ts'
 import { WorktreeNameSchema } from '../app/assessment.ts'
 import { resultRelay } from '../app/notices.ts'
 import type { HealthEntry } from '../infra/health.ts'
@@ -57,6 +59,10 @@ export function transient(error: unknown): boolean {
 const ticketWorktreeName = (name: string, id: string): string => `${WorktreeNameSchema.parse(name)}-${id.slice(0, 12)}`
 /** Host dependencies used by `DshExecutor`. */
 export interface ExecutorHost {
+  /** Optional execution driver; scheduling, pause, retries and lifecycle remain owned here. */
+  readonly native?: NativeWorkerDriver
+  /** Optional native workspace adapter; Engine policies and Executor scheduling stay unchanged. */
+  readonly workspace?: { prepare(ticket: Ticket): Ticket; validate(ticket: Ticket): Promise<void> }
   /** DSH Cordis context: agents and their events, and the subprocess service used to run prepare commands. */
   readonly context: Context
   /** Where the Executor reports what happened to Assignments and Inputs. */
@@ -236,7 +242,8 @@ export class DshExecutor implements Executor {
   }
   /** Populates a newly accepted ticket's `execution` attributes (worktree name, workspace directory, and assignment text). */
   prepare(ticket: Ticket, outcome: Extract<AssessmentOutcome, { kind: 'accept' }>): Ticket {
-    return { ...ticket, execution: ticketExecution(ticket, outcome, this.host.store.settings(), this.host.machine.stateDir) }
+    const prepared = { ...ticket, execution: ticketExecution(ticket, outcome, this.host.store.settings(), this.host.machine.stateDir) }
+    return this.host.workspace?.prepare(prepared) ?? prepared
   }
   /**
    * Runs the configured `executor.prepare` command for a new ticket workspace in its parent directory with the ticket's
@@ -251,7 +258,11 @@ export class DshExecutor implements Executor {
     const env = Object.fromEntries(this.host.environment(ticket).map(variable => [variable.key, variable.value]))
     // Enforce a timeout so a hung prepare command (such as on a credential prompt) fails the ticket instead of holding a worker slot indefinitely.
     const signal = AbortSignal.any([this.host.lifetime, AbortSignal.timeout(PREPARE_TIMEOUT_MS)])
-    if (command) await runAsWorker(this.host.context.subprocess, ['sh', '-c', command], dirname(directory), signal, env)
+    const shell = process.platform === 'win32'
+      ? [powershell(), '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command',
+        `$ErrorActionPreference='Stop'; $env:PSModulePath='${windowsSystem('WindowsPowerShell\\v1.0\\Modules').replaceAll("'", "''")}'\n${command}\nif ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }`]
+      : ['sh', '-c', command]
+    if (command) await runAsWorker(this.host.context.subprocess, shell, dirname(directory), signal, env)
       .catch(async (error: unknown) => {
         // Remove an empty directory left by a failed prepare command so a later retry does not treat it as already prepared.
         await rmdir(directory).catch(() => { /* Absent, or holding what the command wrote, which the output explains. */ })
@@ -311,7 +322,7 @@ export class DshExecutor implements Executor {
         const input = ticket.inputs.find(item => item.id === inputId)
         try {
           // Recreate the worker session if it was externally deleted.
-          if (!this.host.context.agents.get(sessionId as SessionId)) {
+          if (!this.host.native?.handles(ticket) && !this.host.context.agents.get(sessionId as SessionId)) {
             await this.host.sessions.ensure(sessionId, ticket.execution?.directory ?? '', ticket.title, 'worker')
           }
           if (input) await this.deliverInput(ticket, assignment, input)
@@ -339,7 +350,8 @@ export class DshExecutor implements Executor {
     const message = inputMessage(input, trigger)
     if (message === undefined) return
     const text = message.length > ASSIGNMENT_CHARS ? JSON.stringify(capped(message, ASSIGNMENT_CHARS, inputResource(ticket.id, input.id))) : message
-    await this.host.sessions.prompt(workerSessionId(ticket.id), input.id, text, 'steer', live)
+    if (this.host.native?.handles(ticket)) await this.host.native.send(ticket, assignment, input.id, text, live, undefined, [input.id])
+    else await this.host.sessions.prompt(workerSessionId(ticket.id), input.id, text, 'steer', live)
   }
   /** Formats a trigger on `ticket` for the worker, including a preview of the replied-to message when the worker has not yet seen it. */
   private async triggerCard(ticket: Ticket, triggerId: string, note?: string): Promise<object | undefined> {
@@ -362,7 +374,10 @@ export class DshExecutor implements Executor {
     const sessionId = workerSessionId(ticket.id)
     this.host.store.afterCommit(() => {
       this.settling.get(ticket.id)?.abort()
-      if (!ownTurn) this.host.context.agents.get(sessionId as SessionId)?.cancel({ kind: 'user' }, { keepInbox: false })
+      if (!ownTurn) {
+        if (this.host.native?.handles(ticket)) this.track(ticket.id, this.host.native.stop(ticket.id, reason))
+        else this.host.context.agents.get(sessionId as SessionId)?.cancel({ kind: 'user' }, { keepInbox: false })
+      }
       // Its shell jobs and subagents stop with it, also those of a worker that ends its own turn.
       this.stopWork(ticket.id, reason)
       this.left.get(ticket.id)?.collect.abort(); this.left.delete(ticket.id); this.personal.delete(ticket.id)
@@ -370,6 +385,8 @@ export class DshExecutor implements Executor {
   }
   /** Stop what a ticket's worker runs in the background (see `stopBackground`). */
   private stopWork(ticketId: string, reason: string, keepInbox = false): void {
+    const ticket = this.host.store.tickets.get(ticketId)
+    if (ticket && this.host.native?.handles(ticket)) return
     this.track(ticketId, stopBackground(this.host.context, workerSessionId(ticketId), reason, keepInbox))
   }
   /** A stop of a ticket's background work, which a launch or a delivery of the ticket waits for while it runs. */
@@ -389,6 +406,7 @@ export class DshExecutor implements Executor {
    * of the jobs left to a person, which were killed, and cancel a worker turn that started meanwhile, keeping its inbox.
    */
   async shutdown(): Promise<void> {
+    if (this.host.native) await until(this.host.native.shutdown(), undefined, SHUTDOWN_STOP_MS)
     const agents = this.host.store.tickets.list().map(ticket => this.host.context.agents.get(workerSessionId(ticket.id) as SessionId))
       .filter((agent): agent is Agent => agent !== undefined)
     const stop = async () => {
@@ -405,6 +423,7 @@ export class DshExecutor implements Executor {
   /** Whether a ticket's worker holds a worker slot: its turn runs, or its shell jobs or subagents do after its turn ended. */
   private running(ticket: Ticket): boolean {
     if (!runningAssignment(ticket)) return false
+    if (this.host.native?.handles(ticket)) return this.host.native.running(ticket.id)
     return this.host.context.agents.get(workerSessionId(ticket.id) as SessionId)?.status === 'running' || this.settling.has(ticket.id)
   }
   /** Marks a ticket failed after its launch fails; the ticket waits until new human input or an explicit retry arrives. */
@@ -431,6 +450,8 @@ export class DshExecutor implements Executor {
     const source = sourceTrigger(this.host, ticket)
     const workspace = ticket.execution?.directory ?? ''
     if (!current()) return
+    await this.host.workspace?.validate(ticket)
+    if (!current()) return
     // Prepare the workspace directory once; an existing directory counts as already prepared, including worktrees created before `prepare` commands existed.
     if (!await stat(workspace).then(() => true, () => false)) {
       await this.prepareDirectory(ticket)
@@ -438,19 +459,20 @@ export class DshExecutor implements Executor {
     }
     if (!current()) return
     const sessionId = workerSessionId(ticket.id)
-    const agent = await this.host.sessions.ensure(sessionId, workspace, ticket.title, 'worker')
+    const native = this.host.native?.handles(ticket) ? this.host.native : undefined
+    const agent = native ? undefined : await this.host.sessions.ensure(sessionId, workspace, ticket.title, 'worker')
     if (!current()) return
     // The background work of the Assignment this one replaces stops first, so its end does not clear this one's message.
     await this.stopped(ticket.id)
     if (!current()) return
     // A message put back for this Assignment may still wait in the Session, kept by a restart's cancel or persisted across a
     // crash, where this launch's message would take it into a step beside the copy delivered next: that copy is the only one.
-    for (const id of this.host.store.tickets.get(ticket.id)?.undelivered ?? []) agent.inbox.remove(this.host.sessions.promptedId(id))
+    for (const id of this.host.store.tickets.get(ticket.id)?.undelivered ?? []) agent?.inbox.remove(this.host.sessions.promptedId(id))
     // The first message holds the assignment and the source Trigger; a later Assignment's says only what is new, unless the
     // Session lost the first, such as when someone deleted it.
     const first = `assignment:${ticket.id}`
     const later = ticket.assignments.length > 1
-    const told = later && await this.host.sessions.holds(sessionId, first)
+    const told = later && (native ? native.holds(ticket.id, first) : await this.host.sessions.holds(sessionId, first))
     if (!current()) return
     const retried = ticket.assignments.at(-2)?.endedReason === 'retried' ? { note: RETRIED } : {}
     const assignmentText = ticket.execution?.assignment ?? ''
@@ -463,9 +485,10 @@ export class DshExecutor implements Executor {
         ...(read ? { assignment_chars: chars, assignment_read: read } : {}), ...(card ? { trigger: card } : {}),
         ...(batch.length ? { batch } : {}), ...retried })
     const requestId = later ? `assignment:${ticket.id}:${assignment.id}` : first
-    await this.host.sessions.prompt(sessionId, requestId, text, 'queue',
-      () => { if (!current()) throw new Error('Launch authorization changed before worker delivery') },
-      () => { this.host.engine.assignmentStarted(ticket.id, assignment.id) })
+    const authorize = () => { if (!current()) throw new Error('Launch authorization changed before worker delivery') }
+    const accepted = () => { this.host.engine.assignmentStarted(ticket.id, assignment.id) }
+    if (native) await native.send(ticket, assignment, requestId, text, authorize, accepted)
+    else await this.host.sessions.prompt(sessionId, requestId, text, 'queue', authorize, accepted)
     this.host.engine.assignmentStarted(ticket.id, assignment.id)
   }
   /** Returns the stored ticket for `agent` when it is a worker session, or undefined otherwise. */
@@ -475,6 +498,23 @@ export class DshExecutor implements Executor {
   }
   /** Subscribes to host `agent/status`, `agent/inbox/claimed`, `session/event` and `agent/error` events for worker sessions. Call once at startup. */
   install(): void {
+    if (this.host.native) this.disposers.push(this.host.native.install({
+      completed: (ticketId, assignmentId, report, inputIds) => {
+        const ticket = this.host.store.tickets.get(ticketId)
+        if (this.host.closing() || !ticket || !liveTicket(ticket) || runningAssignment(ticket)?.id !== assignmentId) return
+        this.host.store.atomic(() => {
+          if (inputIds.length) this.host.engine.inputsRead(ticketId, inputIds)
+          const updated = this.host.engine.report(ticketId, report)
+          this.relay(resultRelay(updated, report.state, report.summary))
+        })
+      },
+      failed: (ticketId, assignmentId, error) => {
+        const ticket = this.host.store.tickets.get(ticketId)
+        if (this.host.closing() || !ticket || !liveTicket(ticket) || runningAssignment(ticket)?.id !== assignmentId) return
+        if (this.retries(assignmentId, error)) this.resumeAfter(ticketId, assignmentId, error)
+        else void this.background(Promise.resolve().then(() => this.failed(ticketId, String(error))))
+      },
+    }))
     const ctx = this.host.context
     this.disposers.push(ctx.on('agent/status', ({ agent, status }) => {
       // A turn that starts ends the look at its worker's background work; the turn's own idle looks afresh.
@@ -568,7 +608,11 @@ export class DshExecutor implements Executor {
         if (!(failure instanceof Later)) throw failure
         this.after(SLOT_WAIT_MS, go); return
       }
-      const sent = this.host.sessions.prompt(sessionId, `retry:${assignmentId}:${tries}`, text, 'queue')
+      const sent = this.host.native?.handles(ticket)
+        ? this.host.native.send(ticket, runningAssignment(ticket)!, `retry:${assignmentId}:${tries}`, text, () => {
+          if (this.host.paused() || !liveTicket(this.host.store.tickets.get(ticketId)!)) throw Error('Retry authorization changed')
+        })
+        : this.host.sessions.prompt(sessionId, `retry:${assignmentId}:${tries}`, text, 'queue')
       void this.background(sent.finally(() => { if (waking) this.slots.free(ticketId); this.resuming.delete(assignmentId) })
         .catch(failure => { this.failed(ticketId, String(failure)) }))
     }

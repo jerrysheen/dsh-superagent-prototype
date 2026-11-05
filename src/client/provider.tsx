@@ -4,6 +4,7 @@ import { createPortal } from 'react-dom'
 import { caller, usePoll, type ApiMessages, type Call, type SetupView, type StateView } from './api.ts'
 import type { Route } from './route.ts'
 import STYLES from './client.css?raw'
+import NATIVE_CONTROLS from './native-controls.css?raw'
 import { errorText, setupText, valueLabel, type T } from './text.ts'
 
 export interface PanelContext {
@@ -101,7 +102,7 @@ export function PanelProvider({ t, interval = 5000, openSession = noSession, nav
   const data = useMemo(() => ({ state, error, reload, setup: state?.setup, running: state?.load.running ?? 0, restarts }), [state, error,
     reload, restarts])
   return <Panel.Provider value={context}><PanelState.Provider value={data}>
-    <style>{STYLES}</style>
+    <style>{STYLES}{NATIVE_CONTROLS}</style>
     {children}
     {toast && <Toast key={toast.id} text={toast.text} onDone={() => setToast(undefined)} />}
   </PanelState.Provider></Panel.Provider>

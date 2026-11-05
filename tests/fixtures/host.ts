@@ -16,7 +16,8 @@ import { githubKind } from '../../src/sources/github.ts'
 import { Commands } from '../../src/infra/commands.ts'
 import { credentialHelper, workerGitConfig } from '../../src/infra/environment.ts'
 import type { Trigger } from '../../src/core/index.ts'
-import { testMachine } from './deployment.ts'
+import { isPrepare, workerCommandKey, testMachine } from './deployment.ts'
+import type { Machine } from '../../src/deployment.ts'
 
 export const MEMBER = 'ou_alice'
 export const CHAT = 'oc_team'
@@ -132,9 +133,9 @@ export function subagentRuntime(agents: Map<string, FakeAgent>) {
 }
 
 /** @param seed - writes to the database before the Runtime opens it, such as records an earlier version stored. */
-export async function startRuntime(seed?: (store: Store) => void) {
+export async function startRuntime(seed?: (store: Store) => void, machine: Partial<Machine> = {}, inheritedTools?: string[]) {
   const directory = mkdtempSync(join(tmpdir(), 'orchestrator-host-'))
-  const AGENT = join(directory, 'agent-gh'), BOT = join(directory, 'lark-bot')
+  const AGENT = join(directory, 'agent-gh.exe'), BOT = join(directory, 'lark-bot.exe')
   const repository = { default_branch: 'master', permissions: { push: true } }
   vi.spyOn(Commands.prototype, 'gh').mockImplementation(async args => args[1] === 'user' ? { login: 'agent-bot' } : repository)
   vi.spyOn(Commands.prototype, 'lark').mockResolvedValue({ users: [{ member_id: MEMBER, name: 'Alice' }], has_more: false })
@@ -147,25 +148,24 @@ export async function startRuntime(seed?: (store: Store) => void) {
     [`${BOT} auth status`]: JSON.stringify({ appId: 'cli_bot', brand: 'feishu', identities: { bot: { status: 'ready' } } }),
     [`${BOT} config strict-mode`]: 'strict-mode: bot (source: profile)',
     [`${BOT} api GET /open-apis/bot/v3/info --as bot --format ndjson`]: '{"bot":{"open_id":"ou_bot"},"code":0,"msg":"ok"}',
-    ['git config -z --show-origin --get-all credential.https://github.com.helper']: `file:${workerGitConfig(directory)}\0${credentialHelper(AGENT)}\0`,
-    [scoped]: `global\0credential.helper\n\0global\0credential.https://github.com.helper\n${credentialHelper(AGENT)}\0`,
+    ['git config -z --show-origin --get-all credential.https://github.com.helper']: `file:${workerGitConfig(directory)}\0${credentialHelper(join(directory, 'worker-bin', 'gh.cjs'))}\0`,
+    [scoped]: `global\0credential.helper\n\0global\0credential.https://github.com.helper\n${credentialHelper(join(directory, 'worker-bin', 'gh.cjs'))}\0`,
   }
-  /** A prepare command (`sh -c`) waits for this while it is set. */
+  /** A native workspace prepare command waits for this while it is set. */
   const hooks: { prepare?: Promise<void> } = {}
   const subprocess = { spawn: vi.fn((spec: { argv: readonly string[] }) => {
-    const argv = [...spec.argv]
-    while (argv[0] === 'env' || /^[A-Z_]+=/.test(argv[0] ?? '')) argv.shift()
+    const argv = spec.argv
     const reader = (text: string) => ({ readFrom: () => ({ text, nextOffset: text.length, lossy: false }) })
     const exited = { exitCode: 0, signal: null }
-    const done = argv[0] === 'sh' && hooks.prepare ? hooks.prepare.then(() => exited) : Promise.resolve(exited)
-    return { done, collected: { stdout: reader(answers[argv.join(' ')] ?? ''), stderr: reader('') } }
+    const done = isPrepare(argv) && hooks.prepare ? hooks.prepare.then(() => exited) : Promise.resolve(exited)
+    return { done, collected: { stdout: reader(answers[workerCommandKey(argv)] ?? ''), stderr: reader('') } }
   }) }
   const agents = new Map<string, FakeAgent>()
   /** Each Session's next step, which takes the messages that wait for one. */
   const steps = new Map<string, () => void>(), claims = new Map<string, () => void>()
   const tools = new Map<string, Map<string, RegisteredTool>>()
   const deliveries = vi.fn<(request: Delivery) => void>()
-  let http!: HttpHandler
+  const http = new Map<string, HttpHandler>()
   const resolveDefault = async (id: string) => agents.has(id) ? { agent: agents.get(id) } : { error: { code: 'session/not-found' } }
   const controller = {
     create: vi.fn(async ({ sessionId }: { sessionId: string }) => {
@@ -174,7 +174,11 @@ export async function startRuntime(seed?: (store: Store) => void) {
       const sessionTools = new Map<string, RegisteredTool>()
       tools.set(sessionId, sessionTools)
       const register = (tool: RegisteredTool) => { sessionTools.set(tool.name, tool); return () => sessionTools.delete(tool.name) }
-      agentCtx.reflect.provide('tools', { register, get: () => undefined, restrict: vi.fn(() => () => {}), guard: vi.fn(() => () => {}) })
+      agentCtx.reflect.provide('tools', { register, get: (name: string) => inheritedTools?.includes(name) ? { name } : undefined,
+        restrict: vi.fn((rule: { allow: string[] }) => {
+          if (inheritedTools && rule.allow.some(name => !inheritedTools.includes(name))) throw new Error('Restriction names an unknown preset tool')
+          return () => {}
+        }), guard: vi.fn(() => () => {}) })
       agentCtx.reflect.provide('skills', { register: () => () => {} })
       agentCtx.reflect.provide('systemPrompt', { section: () => () => {} })
       const inbox = { nextTurn: [] as UserMessage[], nextStep: [] as UserMessage[],
@@ -235,25 +239,27 @@ export async function startRuntime(seed?: (store: Store) => void) {
   }
   const reader = { read: async () => ({ events: [] }), [Symbol.asyncDispose]: async () => {} }
   const persistence = { flush: vi.fn(async () => {}), open: vi.fn(async () => reader) }
-  const webServer = { host: '127.0.0.1', port: 3082, register: (route: { handler: HttpHandler }) => { http = route.handler; return () => {} } }
+  const webServer = { host: '127.0.0.1', port: 3082, register: (route: { path: string; handler: HttpHandler }) => {
+    http.set(route.path, route.handler); return () => { http.delete(route.path) }
+  } }
   const jobs = jobRegistry(id => agents.get(id))
   const subagents = subagentRuntime(agents)
   const services = { agents, llm: { resolveCallConfig: vi.fn(async (value: unknown) => value) }, sessionController: controller,
-    sessionPersistence: persistence, workspaceRegistry: { create: async (cwd: string) => ({ id: cwd }) }, permissionPresets: { set: () => {} }, subprocess, webServer,
+    sessionPersistence: persistence, workspaceRegistry: { create: async (cwd: string) => ({ id: cwd }) }, permissionPresets: { set: vi.fn() }, subprocess, webServer,
     jobs: jobs.service, subagents: subagents.service }
   const ctx = new Context()
   for (const [name, service] of Object.entries(services)) ctx.reflect.provide(name, service)
-  for (const cli of [AGENT, BOT]) writeFileSync(cli, '#!/bin/sh\n', { mode: 0o755 })
+  for (const cli of [AGENT, BOT]) writeFileSync(cli, '') // Account probes are supplied by the subprocess fixture.
   const seeded = new Store(join(directory, 'orchestrator.sqlite'))
   const sources = { github: { enabled: true, config: { repository: 'acme/widgets', cli: AGENT } }, feishu: { enabled: true, config: { cli: BOT } } }
   seeded.saveSettings(SettingsSchema.parse({ ...seeded.settings(), sources }))
   seed?.(seeded)
   seeded.close()
-  const runtime = new Runtime(ctx, testMachine({ stateDir: directory }), vi.fn())
+  const runtime = new Runtime(ctx, testMachine({ stateDir: directory, ...machine }), vi.fn())
   await runtime.ready
   runtime.sources.register(feishuKind); runtime.sources.register(githubKind)
   const settings = runtime.store.settings()
-  runtime.store.saveSettings({ ...settings, eval: { ...settings.eval, mode: 'auto' },
+  if (machine.coordinationMode !== 'sessions') runtime.store.saveSettings({ ...settings, eval: { ...settings.eval, mode: 'auto' },
     policy: { ...settings.policy, sources: { feishu: { allowed: [{ id: MEMBER, name: 'Alice' }], syncChat: CHAT }, github: { allowed: [{ id: 'alice' }] } } },
     sources: { ...sources, feishu: { enabled: true, config: { cli: BOT, chats: [{ chatId: CHAT, listen: 'all' }], directMessages: true } } } })
   deliveries.mockClear()
@@ -281,11 +287,13 @@ export async function startRuntime(seed?: (store: Store) => void) {
     const ticket = runtime.store.tickets.get((result.ticket as { ticket_id: string }).ticket_id)!
     return { trigger, ticket, sessionId: `worker-${ticket.id}` }
   }
-  async function api(method: string, path: string, json?: unknown) {
+  async function api(method: string, path: string, json?: unknown, prefix = '/orchestrator/api') {
     let status = 0, text = ''
     const chunks = json === undefined ? [] : [Buffer.from(JSON.stringify(json))]
-    const req = { method, url: `/orchestrator/api/${path}`, headers: { host: '127.0.0.1:3082', 'x-orchestrator-request': '1' }, async *[Symbol.asyncIterator]() { yield* chunks } }
-    await http(req, { writeHead: (code: number) => { status = code }, end: (data: string) => { text = data } })
+    const req = { method, url: `${prefix}/${path}`, headers: { host: '127.0.0.1:3082', 'x-orchestrator-request': '1' }, async *[Symbol.asyncIterator]() { yield* chunks } }
+    const handler = [...http].filter(([prefix]) => req.url.startsWith(prefix)).sort(([a], [b]) => b.length - a.length)[0]?.[1]
+    if (!handler) throw new Error('No registered HTTP route for ' + req.url)
+    await handler(req, { writeHead: (code: number) => { status = code }, end: (data: string) => { text = data } })
     return { status, body: JSON.parse(text) as Record<string, unknown> }
   }
   async function stop() { await runtime.stop(); vi.restoreAllMocks(); rmSync(directory, { recursive: true, force: true }) }
@@ -293,7 +301,8 @@ export async function startRuntime(seed?: (store: Store) => void) {
   const step = (sessionId: string) => { steps.get(sessionId)!() }
   /** A step of the worker claims what waits for it, and is cut off before the Session took it. */
   const claim = (sessionId: string) => { claims.get(sessionId)!() }
-  return { runtime, ctx, directory, agents, tools, deliveries, relays, candidates, runTool, route, acceptedTicket, api, controller, subprocess, hooks, resolveDefault, stop,
-    jobs, subagents, step, claim }
+  const sessionApi = (method: string, path: string, json?: unknown) => api(method, path, json, '/session-hub/api')
+  return { runtime, ctx, directory, agents, tools, deliveries, relays, candidates, runTool, route, acceptedTicket, api, sessionApi, controller, subprocess, hooks, resolveDefault, stop,
+    jobs, subagents, step, claim, permissions: services.permissionPresets.set as Mock<(session: unknown, preset: string) => void> }
 }
 export type Host = Awaited<ReturnType<typeof startRuntime>>

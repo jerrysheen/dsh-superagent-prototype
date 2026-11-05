@@ -5,11 +5,12 @@
  */
 import { lstat, mkdir, readdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import { realpathSync } from 'node:fs'
-import { delimiter, join, resolve } from 'node:path'
+import { basename, delimiter, join, resolve } from 'node:path'
 import type { SubprocessOutputReader, SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
 import type { Deployment } from '../deployment.ts'
 import { SetupError } from '../setup.ts'
 import { CliError } from './commands.ts'
+import { nativeLauncher, subprocessCommand } from './native-command.ts'
 
 const MARKER = '# Written by dsh-superagent on every start; edits are lost.'
 /** Markers of files written under the project's earlier names (`dsh-tag`, `dsh-go`, `dsh-freelancer`), which `dsh-superagent` owns and replaces too. */
@@ -20,11 +21,11 @@ export const workerBin = (stateDir: string): string => join(stateDir, 'worker-bi
 export const workerGitConfig = (stateDir: string): string => join(stateDir, 'worker-gitconfig')
 const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`
 const gitQuote = (value: string): string => `"${value.replace(/[\\"]/g, char => `\\${char}`)}"`
-export const credentialHelper = (cli: string): string => `!${shellQuote(cli)} auth git-credential`
+export const credentialHelper = (launcher: string): string => `!${shellQuote(process.execPath.replaceAll('\\', '/'))} ${shellQuote(launcher.replaceAll('\\', '/'))} auth git-credential`
 
 export function sameDirectory(a: string, b: string): boolean {
-  const real = (path: string): string => { try { return realpathSync(path) } catch { return resolve(path) } }
-  return real(a) === real(b)
+  const real = (path: string): string => { const unquoted = path.replace(/^"|"$/g, ''); try { return realpathSync(unquoted) } catch { return resolve(unquoted) } }
+  return real(a).toLowerCase() === real(b).toLowerCase()
 }
 export function withoutDirectory(path: string, dir: string): string {
   return path.split(delimiter).filter(entry => !sameDirectory(entry, dir)).join(delimiter)
@@ -61,7 +62,7 @@ export function agentVariables(stateDir: string): Record<string, string | undefi
 async function written(file: string): Promise<boolean> {
   if (!(await lstat(file)).isFile()) return false
   const head = (await readFile(file, 'utf8')).split('\n', 2)
-  return [MARKER, ...LEGACY_MARKERS].some(marker => head.includes(marker))
+  return [MARKER, ...LEGACY_MARKERS].some(marker => head.some(line => [marker, '// ' + marker, 'REM ' + marker].includes(line.trim())))
 }
 async function own(file: string, text: string, mode = 0o644): Promise<void> {
   let foreign = false
@@ -73,7 +74,7 @@ async function own(file: string, text: string, mode = 0o644): Promise<void> {
 }
 
 /**
- * Atomically writes worker CLI shims and the isolated git configuration file into the state directory, refusing to overwrite foreign files.
+ * Atomically writes native CMD/PowerShell shims, Node launchers and isolated git configuration, refusing to overwrite foreign files.
  * Each shim strips the shim directory from PATH before exec so wrapper scripts resolving `gh` or `lark-cli` by name reach the real binary.
  */
 export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' | 'repository' | 'github' | 'feishu'>, blockedCommands: readonly string[]): Promise<void> {
@@ -84,23 +85,38 @@ export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' |
   for (const name of before) { const file = join(dir, name); if (!await written(file)) throw new SetupError('foreignFile', { file }) }
   // Workers may be running concurrently: write each shim to a temp file and atomically rename it so no command ever resolves past the shim directory.
   const kept = new Set<string>()
-  const shim = async (name: string, body: string): Promise<void> => {
-    const temporary = join(dir, `.${name}.${process.pid}.tmp`)
-    await writeFile(temporary, `#!/bin/sh\n${MARKER}\n${body}\n`, { mode: 0o755 })
-    await rename(temporary, join(dir, name))
-    kept.add(name)
+  const shim = async (name: string, program?: string, failure = ''): Promise<void> => {
+    if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(name)) throw new Error('Invalid blocked command name')
+    const launcher = join(dir, name + '.cjs')
+    const psQuote = (value: string) => "'" + value.replaceAll("'", "''") + "'"
+    const cmdQuote = (value: string) => '"' + value.replaceAll('%', '%%') + '"'
+    const files = {
+      [name + '.cjs']: `// ${MARKER}\n` + nativeLauncher(program, failure, dir, agentVariables(stateDir)),
+      [name + '.cmd']: `@echo off\r\nREM ${MARKER}\r\n${cmdQuote(process.execPath)} ${cmdQuote(launcher)} %*\r\n`,
+      [name + '.ps1']: MARKER + '\n' + String.raw`
+$ErrorActionPreference = 'Stop'
+$values = @(` + psQuote(launcher) + String.raw`) + $args
+$quoted = @($values | ForEach-Object { '"' + [regex]::Replace([regex]::Replace([string]$_, '(\\*)"', '$1$1\"'), '(\\+)$', '$1$1') + '"' })
+$start = New-Object Diagnostics.ProcessStartInfo
+$start.FileName = ` + psQuote(process.execPath) + String.raw`
+$start.Arguments = $quoted -join ' '
+$start.UseShellExecute = $false
+$process = [Diagnostics.Process]::Start($start)
+$process.WaitForExit()
+exit $process.ExitCode
+`,
+    }
+    for (const [file, text] of Object.entries(files)) {
+      const temporary = join(dir, `.${file}.${process.pid}.tmp`)
+      await writeFile(temporary, text)
+      await rename(temporary, join(dir, file))
+      kept.add(file)
+    }
   }
-  const withoutShims = [
-    `self=${shellQuote(dir)}`, 'rest=', 'IFS=:', 'set -f',
-    'for entry in $PATH; do [ "$entry" = "$self" ] || rest="${rest:+$rest:}$entry"; done',
-    'set +f', 'unset IFS', 'PATH=$rest', 'export PATH',
-  ].join('\n')
-  const run = (program: string): string => `${withoutShims}\nexec ${shellQuote(program)} "$@"`
-  const fail = (message: string): string => `echo ${shellQuote(message)} >&2\nexit 1`
-  await shim('gh', run(github.cli))
-  await shim('lark-cli', feishu ? run(feishu.cli) : fail('lark-cli is unavailable: this installation has no Feishu bot.'))
+  await shim('gh', github.cli)
+  await shim('lark-cli', feishu?.cli, 'lark-cli is unavailable: this installation has no Feishu bot.')
   for (const name of new Set(blockedCommands.filter(name => !WORKER_COMMANDS.includes(name)))) {
-    await shim(name, fail(`${name} is blocked in this installation; use gh, which acts as ${github.login}.`))
+    await shim(name, undefined, `${name} is blocked in this installation; use gh, which acts as ${github.login}.`)
   }
   for (const name of before) if (!kept.has(name)) await unlink(join(dir, name))
   await own(workerGitConfig(stateDir), [
@@ -108,7 +124,7 @@ export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' |
     // Make git refuse to commit without an explicit identity set by the worker instead of guessing from the operator's OS user.
     '[user]', '\tuseConfigOnly = true',
     '[credential]', '\thelper =',
-    '[credential "https://github.com"]', `\thelper = ${gitQuote(credentialHelper(github.cli))}`,
+    '[credential "https://github.com"]', `\thelper = ${gitQuote(credentialHelper(join(dir, 'gh.cjs')))}`,
     '[url "https://github.com/"]', '\tinsteadOf = git@github.com:', '\tinsteadOf = ssh://git@github.com/',
     // Include Git LFS filters because the operator's global gitconfig (which usually holds them) is ignored.
     '[filter "lfs"]', '\tclean = git-lfs clean -- %f', '\tsmudge = git-lfs smudge -- %f', '\tprocess = git-lfs filter-process', '\trequired = true',
@@ -126,20 +142,22 @@ export function applyEnvironment(variables: Record<string, string | undefined>, 
 
 /** Spawns a command through the DSH subprocess runtime, which strips credential-shaped environment variables. */
 export async function runAsWorker(subprocess: SubprocessRuntime, argv: string[], cwd: string, signal: AbortSignal, env?: Record<string, string>): Promise<string> {
-  const handle = subprocess.spawn({ argv, cwd, graceMs: 2000, signal, ...env ? { env } : {}, stdio: { stdin: 'ignore', stdout: { maxBytes: 1 << 20 }, stderr: { maxBytes: 1 << 16 } } })
+  const command = subprocessCommand(argv[0]!, argv.slice(1), { ...process.env, ...env })
+  const handle = subprocess.spawn({ argv: command, cwd, graceMs: 2000, signal, ...env ? { env } : {}, stdio: { stdin: 'ignore', stdout: { maxBytes: 1 << 20 }, stderr: { maxBytes: 1 << 16 } } })
   const { exitCode } = await handle.done
   const read = (reader: SubprocessOutputReader | undefined): string => reader?.readFrom(0).text ?? ''
   if (exitCode === 0) return read(handle.collected.stdout)
   const ended = exitCode === null ? 'was stopped before it finished' : `exited with ${exitCode}`
-  throw new CliError(read(handle.collected.stderr).trim() || `${argv.join(' ')} ${ended}`, undefined, exitCode ?? undefined)
+  throw new CliError(read(handle.collected.stderr).trim() || `${basename(argv[0] ?? 'command')} ${ended}`, undefined, exitCode ?? undefined)
 }
 
 /** Verifies that worker git invocations resolve the deployment's GitHub credential helper. */
 export async function verifyEnvironment(deployment: Pick<Deployment, 'github' | 'stateDir'>, subprocess: SubprocessRuntime, signal: AbortSignal): Promise<void> {
-  const { github, stateDir } = deployment
-  // `-z` separates fields with NUL and never quotes paths.
+  const { stateDir } = deployment
+  // `-z` separates fields with NUL and never quotes paths, including Windows drive paths.
   const helpers = (await runAsWorker(subprocess, ['git', 'config', '-z', '--show-origin', '--get-all', 'credential.https://github.com.helper'], stateDir, AbortSignal.any([signal, AbortSignal.timeout(60_000)])).catch(() => '')).split('\0')
-  if (helpers.join('\0') !== [`file:${workerGitConfig(stateDir)}`, credentialHelper(github.cli), ''].join('\0')) throw new SetupError('gitTooOld')
+  if (helpers.length !== 3 || !helpers[0]?.startsWith('file:') || !sameDirectory(helpers[0].slice(5), workerGitConfig(stateDir))
+    || helpers[1] !== credentialHelper(join(workerBin(stateDir), 'gh.cjs')) || helpers[2] !== '') throw new SetupError('gitTooOld')
 }
 
 /**

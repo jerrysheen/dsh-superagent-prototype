@@ -9,6 +9,8 @@ const raw = { name: 'raw',
 export default defineConfig([
   { entry: { index: 'src/index.ts', 'github-watch': 'src/sources/github.ts', 'feishu-watch': 'src/sources/feishu.ts' }, outDir: 'lib', format: 'esm', fixedExtension: false, platform: 'node', target: 'es2024', dts: true, clean: true, deps: { neverBundle: [/^@deepseek-ai\//, 'zod', 'proper-lockfile'] } },
   { entry: { client: 'src/client/index.tsx' }, outDir: 'lib', format: 'cjs', platform: 'browser', dts: false, clean: false, plugins: [raw],
-    deps: { neverBundle: ['react', 'react/jsx-runtime', 'react-dom'] },
+    // tsdown defaults CJS resolution to Node; this CJS wrapper runs inside DSH's browser loader.
+    inputOptions: { platform: 'browser' },
+    deps: { neverBundle: ['react', 'react/jsx-runtime', 'react-dom'], alwaysBundle: [/^(?!react(?:\/|$)|react-dom(?:\/|$))[^.\u0000]/] },
     outputOptions: { entryFileNames: 'client.js', banner: 'window.__ModuleLoader__.load({ id: "dsh-superagent", factory: (require) => {', footer: 'return module.exports; } });', intro: 'var module = { exports: {} }; var exports = module.exports;' } },
 ])

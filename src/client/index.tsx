@@ -12,9 +12,22 @@ import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { openKnownSession, SessionNavigationError } from '../navigation.ts'
 import { App } from './app.tsx'
+import { CodexWorkspacePage, CodexWorkspaceSidebar } from './codex-workspace.tsx'
+import { CodexWorkspaceStore } from './codex-workspace-store.ts'
 import { PluginConfig, usePageForm } from './deployment.tsx'
 import { en, zh } from './locales.ts'
 import type { T } from './text.ts'
+import type { AppProps } from './app.tsx'
+import type { PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
+import { AgentChat, AgentChatContent } from './agent-chat.tsx'
+import { workerReferenceSource, folderReferenceSource } from './worker-references.ts'
+
+declare module '@deepseek-ai/dsh-client-ui-slots' {
+  interface SlotMap {
+    /** Optional DSH sidebar extension: nested navigation under an active panel. */
+    'sidebar.panellist.subnav': { kind: 'list'; scope: 'root'; owner: { wide: boolean; active: boolean } }
+  }
+}
 
 type ClientContext = Context & { sessions: ISessions }
 const NS = 'dshSuperagent'
@@ -28,7 +41,7 @@ function HammerIcon({ size }: SidebarPanelIconOwnerProps) {
 }
 
 /** Mounted panel wrapper; cancels any pending Session navigation when a new one starts or the panel unmounts. */
-function Mounted({ ctx, t }: { ctx: ClientContext; t: T }) {
+function Mounted({ ctx, t, openCodex, SessionProvider, renderSlot }: { ctx: ClientContext; t: T; openCodex: AppProps['openCodex'] } & PropsRenderSlots<'superagent.agent-chat'>) {
   const pending = useRef<AbortController>(undefined)
   useEffect(() => () => { pending.current?.abort() }, [])
   const openSession = useCallback(async (id: string) => {
@@ -42,17 +55,53 @@ function Mounted({ ctx, t }: { ctx: ClientContext; t: T }) {
     }
   }, [ctx, t])
   const form = usePageForm(ctx.get('configForms')?.get<Record<string, unknown>>(ENTRY))
-  return <App t={t} openSession={openSession} deploymentForm={form} />
+  const renderChat = useCallback((id: string, prepare: () => Promise<{ sessionId: string }>) => <AgentChat key={id} id={id} prepare={prepare} sessions={ctx.sessions} SessionProvider={SessionProvider}>
+    {renderSlot('superagent.agent-chat', {})}
+  </AgentChat>, [ctx, SessionProvider, renderSlot])
+  return <App t={t} openSession={openSession} deploymentForm={form} openCodex={openCodex} renderChat={renderChat} />
 }
 
-export const inject = ['slots', 'locale', 'sessions', 'uiWorkspace']
+export const inject = ['slots', 'locale', 'sessions', 'uiWorkspace', 'layout']
 /** Registers the panel, sidebar icon, and Plugin Manager config view; `configForms` is optional (without it, machine settings are read-only). */
 export function apply(ctx: ClientContext): void {
+  ctx.inject(['inputTriggers'], scope => {
+    scope.effect(() => scope.inputTriggers.registerSource(workerReferenceSource()), 'superagent: Worker references')
+    scope.effect(() => scope.inputTriggers.registerSource(folderReferenceSource()), 'superagent: project folders')
+  })
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-superagent: dictionaries')
   const t = ctx.locale.bind(NS)
-  ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: PANEL_ID, locale: NS, inject: () => ({}) },
-    (props: { t: T }) => <Mounted ctx={ctx} t={props.t} />))
+  const workspace = new CodexWorkspaceStore()
+  const workspacePanel = 'dsh-codex-workspace' as MainPanelId
+  let entered = false
+  const openCodex: NonNullable<AppProps['openCodex']> = thread => { workspace.select(thread); ctx.layout.selectPanel(workspacePanel) }
+  ctx.slots.inject('main', function* () {
+    yield ctx.slots.register({ name: 'main', key: PANEL_ID, locale: NS, inject: () => ({}),
+      children: { 'superagent.agent-chat': { kind: 'single', scope: 'session' } } },
+    (props: { t: T } & PropsRenderSlots<'superagent.agent-chat'>) => <Mounted {...props} ctx={ctx} openCodex={openCodex} />)
+    yield ctx.slots.register({ name: 'superagent.agent-chat', inject: sessionId => ({
+      insertReference: (reference: import('@deepseek-ai/dsh-client-ui-conversation/client').ReferenceInsert,
+        span: import('@deepseek-ai/dsh-client-ui-conversation/client').TokenSpan) => {
+        const scope = ctx.sessions.scope(sessionId)
+        return !!scope && scope.bail(scope, 'slash/input-insert-reference', { reference, span }) === true
+      },
+    }) }, AgentChatContent)
+    // A fresh browser boot opens the Agent workspace; later navigation remains user-controlled.
+    if (!entered) {
+      entered = true
+      try {
+        sessionStorage.removeItem('dsh-superagent/route')
+        sessionStorage.removeItem('dsh-overview-view-v2')
+      } catch { /* Browser storage is optional; default routes already point to Agent chat. */ }
+      ctx.layout.selectPanel(PANEL_ID)
+    }
+  })
+  ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: workspacePanel, locale: NS, inject: () => ({}) },
+    () => <CodexWorkspacePage store={workspace} openManagedWork={() => ctx.layout.selectPanel(PANEL_ID)} />))
   ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({ name: 'sidebar.panellist', id: PANEL_ID, order: 10, label: () => t('panel'), locale: NS }, HammerIcon))
+  ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({ name: 'sidebar.footer.action', id: 'dsh-codex-workspace', order: 10, inject: () => ({}) },
+    ({ wide }: { wide: boolean }) => <CodexWorkspaceSidebar wide={wide} store={workspace} onNew={() => ctx.layout.selectPanel(workspacePanel)} open={thread => {
+      workspace.select(thread); ctx.layout.selectPanel(workspacePanel)
+    }} />))
   ctx.slots.inject('plugins.row.config', () => ctx.slots.register({ name: 'plugins.row.config', key: `${ENTRY}#${ENTRY}`, locale: NS },
     (props: PluginConfigViewProps & { t: T }) => <PluginConfig t={props.t} view={props.view} form={props.form} />))
 }

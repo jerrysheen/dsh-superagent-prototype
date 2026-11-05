@@ -159,6 +159,7 @@ function sourceStatuses(): SourceStatusRow[] {
 }
 const stateView = (): StateView => ({
   coordinationMode: 'repository',
+  sessionExecution: false,
   setup: server.setup, load: { running: server.setup.problem ? 0 : 2, queued: 0, maxWorkers: server.settings.executor.maxWorkers },
   masterId: 'master', paused: server.settings.paused,
   // The panel does not read health; the service script does.
@@ -293,6 +294,7 @@ const SourceSave = z.object({ enabled: z.boolean(), config: z.unknown() })
 
 const ROUTES: { [K in keyof Api]: Route<K> } = {
   'GET state': { answer: stateView },
+  'POST master/open': { answer: () => ({ sessionId: 'master' }) },
   'GET overview': { answer: overviewView },
   'GET search': { query: ['q'], answer: async ({ query }) => {
     const q = query.q ?? ''
@@ -421,13 +423,14 @@ async function run<K extends keyof Api>(key: K, params: Record<string, string>, 
   return route.answer({ params: params as RouteParams<K>, query: values, body: body as Body<K> })
 }
 /**
- * Response wrapper that increments `server.pending` when constructed and decrements it when `.text()` is consumed.
+ * Response wrapper that counts pending bodies consumed through either client API.
  * Requests held back by `server.searching` are not constructed until `searching` resolves, so they do not count as pending early.
  */
 class Reply extends Response {
   constructor(value: unknown, status: number) { super(JSON.stringify(value), { status,
     headers: { 'content-type': 'application/json' } }); server.pending++ }
   override async text() { server.pending--; return super.text() }
+  override async json() { server.pending--; return super.json() }
 }
 
 export function usePanelServer(cleanup: () => void) {
@@ -441,6 +444,11 @@ export function usePanelServer(cleanup: () => void) {
       const method = init?.method ?? 'GET'
       const body: unknown = init?.body ? JSON.parse(String(init.body)) : undefined
       server.requests.push({ path: decodeURIComponent(`${path}${address.search}`), method, ...body === undefined ? {} : { body } })
+      if (method === 'GET' && address.pathname === '/session-hub/api/knowledge') return new Reply({ status: 'idle', completed: 0,
+        total: 0, nodes: [], edges: [], failed: [], builtAt: null, scope: null }, 200)
+      if (method === 'GET' && address.pathname === '/session-hub/api/knowledge-classified') return new Reply({ version: 1, taxonomyVersion: 2, relationVersion: 1,
+        builtAt: '2026-11-05T00:00:00Z', nodes: [], edges: [], stats: { domains: 0, topics: 0, sources: 0, local: 0, cloud: 0, unassignedSources: 0, unassignedPairs: 0 } }, 200)
+      if (method === 'GET' && address.pathname === '/session-hub/api/context/threads') return new Reply({ threads: [], nextOffset: null, total: 0 }, 200)
       const route = match(method, path.split('/'))
       if (!route) return new Reply({ error: 'Unknown operation' }, 404)
       const answer = await run(route.key, route.params, address.searchParams, body)

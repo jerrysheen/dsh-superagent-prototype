@@ -8,6 +8,7 @@ import { usePanel } from './provider.tsx'
 import { SETTINGS_GROUPS, settingsRoute, type SettingsGroup } from './route.ts'
 import { SettingsProvider } from './settings-kit.tsx'
 import { SourceSettings } from './source.tsx'
+import { ChatgptSourceSettings } from './chatgpt-source.tsx'
 
 const STAGE_GROUPS: readonly SettingsGroup[] = ['source', 'eval', 'execution']
 export function SettingsPage({ group, query, state, deploymentForm }: {
@@ -16,7 +17,7 @@ export function SettingsPage({ group, query, state, deploymentForm }: {
   const { t, navigate } = usePanel()
   const content = (() => {
     switch (group) {
-      case 'source': return <SettingsProvider><SourceSettings {...query.source ? { focus: query.source } : {}} /></SettingsProvider>
+      case 'source': return <SettingsProvider><SourceSettings {...query.source ? { focus: query.source } : {}} />{state.coordinationMode === 'sessions' && <ChatgptSourceSettings />}</SettingsProvider>
       case 'eval': return <SettingsProvider><EvalSettings version={query.version} /></SettingsProvider>
       case 'execution': return <SettingsProvider><ExecutionSettings /></SettingsProvider>
       case 'prompts': return <PromptsPage />

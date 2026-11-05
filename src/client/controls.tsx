@@ -203,12 +203,14 @@ export function Modal({ open, onClose, title, closeLabel, description, footer, c
   return createPortal(<div className="dt-modal-root" role="presentation">
     <div className="dt-modal-mask" aria-hidden="true" onClick={onClose} />
     <div ref={dialog} className={cx('dt-modal', className)} role="dialog" aria-modal="true" aria-label={title} tabIndex={-1}>
+      <div className="dt-modal-content">
       <div className="dt-modal-header">
-        <h2>{title}</h2>
+        <h2 className="dt-modal-title">{title}</h2>
         <button type="button" className="dt-modal-close" aria-label={closeLabel} onClick={onClose}><Icon name="close" size={14} /></button>
       </div>
       {description && <p className="dt-modal-description">{description}</p>}
       {children !== undefined && <div className="dt-modal-body">{children}</div>}
+      </div>
       {footer !== undefined && <div className="dt-modal-footer">{footer}</div>}
     </div>
   </div>, document.body)

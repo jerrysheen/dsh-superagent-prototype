@@ -22,9 +22,28 @@ Both presets run with `danger-full-access` as the operator's OS user and read me
 
 ## Prerequisites
 
-On Windows, `stateDir` also accepts drive-letter and UNC absolute paths. The Python service script below still requires POSIX process tools and is not a Windows launcher. A direct `dsh --profile superagent --no-open` launch can be used to check panel startup with a dedicated profile; this does not establish Windows support for account setup or task execution.
+On Windows, `stateDir` also accepts drive-letter and UNC absolute paths. Use the native service controller below; it needs Node and Windows PowerShell/CIM, without tmux, POSIX tools or WSL. The account-wrapper examples later in this guide describe the original POSIX repository deployment. Session coordination does not require GitHub execution accounts, Issue/PR workers or repository task sources.
 
-- Node.js 22.19+ or 24+, pnpm, git 2.32+, Python 3.8+ and tmux
+### Windows native service control
+
+Run from this checkout, supplying the JavaScript entry of the installed DSH CLI if `@deepseek-ai/dsh` cannot be resolved locally:
+
+```powershell
+node scripts/dsh-superagent.mjs start --profile superagent --dsh-entry 'C:\path to\dsh\lib\bin.js' --url http://127.0.0.1:3082
+node scripts/dsh-superagent.mjs status --profile superagent
+node scripts/dsh-superagent.mjs stop --profile superagent --stop-timeout 300
+node scripts/dsh-superagent.mjs restart --profile superagent --dsh-entry 'C:\path to\dsh\lib\bin.js'
+```
+
+`python scripts/dsh-superagent ...` dispatches to the same native controller on Windows before loading any POSIX modules. Direct Node invocation does not require Python. The controller starts Node detached with its window hidden, preserves literal paths containing spaces, and appends output to `.artifacts/dsh-superagent-<profile>-<timestamp>-<pid>.log`. It keeps twenty logs per profile. It installs a current-user-only Windows DACL on `.artifacts` and each profile's control directory before writing logs or control tokens. Keep `.artifacts` machine-local; its control records contain ephemeral shutdown authentication tokens.
+
+Windows has no POSIX SIGINT delivery through Node's `process.kill`. A preload module instead opens a random named pipe, authenticates the controller, and invokes DSH's existing SIGINT shutdown handlers inside the service process. Before requesting shutdown, the controller compares the live CIM process command, profile and creation time with the recorded identity. It refuses ambiguous process sets, reused PIDs and unmanaged processes lacking this authenticated channel; it never force-kills a service when graceful shutdown times out. For a process launched outside the controller, use its original operator-controlled shutdown and then start it through this controller.
+
+Each profile has an exclusive `operation.lock`. A controller that exits unexpectedly can leave this lock behind: verify that its recorded PID no longer belongs to a controller before manually removing that profile's lock. Automatic stale-lock deletion is deliberately disabled to prevent concurrent recovery operations from removing each other's lock. `stop` records an intentional stop before waiting; `start --respect-stop` and `restart --respect-stop` honor it. A timed-out restart leaves automatic recovery enabled. Profiles retain independent locks and stop markers.
+
+Exit codes match the original controller: 0 means one service with a ready/paused runtime and no setup/component problem; 1 means stopped, duplicated, unreachable or runtime failure; 2 means a component error; 3 means awaiting setup. Service lifecycle tests launch synthetic native Node children and exercise CIM discovery, authenticated graceful shutdown, timeouts, restart, locking, PID identity and health outcomes. Passing them establishes lifecycle behavior, not successful model calls or end-to-end task execution.
+
+- Node.js 22.19+ or 24+, pnpm, git 2.32+; the POSIX controller also requires Python 3.8+ and tmux
 - GitHub CLI (`gh`) 2.48 or later. Source CLI fields must point to `gh` or `lark-cli` wrappers; the host relies on their subcommands and output formats.
 - A repository on github.com; GitHub Enterprise Server is not supported. To create a checkout per Ticket, keep a local clone from which the prepare command can add worktrees. Install `git-lfs` if that repository uses Git LFS.
 - A model provider configured for DeepSeek Harness. dsh-superagent uses the profile's default model unless the Eval or Execution settings name another.

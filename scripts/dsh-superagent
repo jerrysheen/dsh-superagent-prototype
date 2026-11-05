@@ -6,17 +6,23 @@ reporting a runtime error, which `restart` may fix; 2 when it runs while a compo
 and 3 when it runs and waits for setup. A restart fixes neither 2 nor 3: they need a person.
 """
 
+import os
+import subprocess
+import sys
+
+# Dispatch before importing POSIX-only modules. No shell, tmux or WSL on Windows.
+if os.name == 'nt':
+    from pathlib import Path
+    sys.exit(subprocess.call(['node', str(Path(__file__).with_suffix('.mjs')), *sys.argv[1:]]))
+
 import argparse
 import fcntl
 import json
-import os
 from pathlib import Path
 import re
 import shlex
 import shutil
 import signal
-import subprocess
-import sys
 import time
 import urllib.error
 import urllib.request

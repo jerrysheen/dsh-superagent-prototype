@@ -19,6 +19,7 @@ type Delivery = 'injected' | 'pending'
 
 export interface Api {
   'GET state': { response: StateView }
+  'POST master/open': { response: { sessionId: string } }
   'GET overview': { response: OverviewView }
   'GET search': { query: { q: string }; response: SearchView }
   'GET sources': { response: SourceStatusView[] }

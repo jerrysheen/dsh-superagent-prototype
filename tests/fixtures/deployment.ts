@@ -17,3 +17,14 @@ export const testDeployment = (overrides: Partial<Deployment> = {}): Deployment 
   feishu: { cli: '/bin/false', botId: 'ou_bot', appId: 'cli_bot', brand: 'feishu', name: 'Widgets Bot' },
   ...overrides,
 })
+
+/** Identify workspace prepare launches independently of command contents. */
+export const isPrepare = (argv: readonly string[]): boolean => process.platform === 'win32'
+  ? /[\\/]powershell\.exe$/i.test(argv[0] ?? '') && argv.includes('-Command') : argv[0] === 'sh'
+/** Fixture response keys preserve the configured command after the shell's error/exit wrapper. */
+export function workerCommandKey(argv: readonly string[]): string {
+  if (isPrepare(argv)) return 'prepare ' + (process.platform === 'win32' ? argv.at(-1)!.split('\n').slice(1, -1).join('\n') : argv[2])
+  const normalized = [...argv]
+  if (/[\\/]git(?:\.exe)?$/i.test(normalized[0] ?? '')) normalized[0] = 'git'
+  return normalized.join(' ')
+}

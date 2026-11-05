@@ -32,6 +32,16 @@ Read the numbered documents in order; each builds only on the ones before it.
 
 ## Development
 
+### Windows session coordinator
+
+Managed work uses `prepare_managed_work` and a visible user-confirmed card before submitting through the original local-work Source and Engine. Only new live human master messages supply the model tool's instruction; no history import or model-side confirmation is available. Native composers expose an explicit register-work action alongside ordinary chat. Continuations preserve the original work ID, executor and native binding; unknown or busy unbound sessions are never acquired. V1 is text-only and read-only. The ledger is derived from Engine Tickets and reports, including ended work; prior completion is not proof that a new follow-up ran.
+
+The local fork supports native Codex conversations alongside Engine Tickets. `CODEX_CLI_PATH` (then `CODEX_APP_SERVER_EXE`) explicitly selects a binary; a missing override fails rather than falling back. Without an override, the newest installed desktop-app binary is preferred over the npm shim. Existing native conversations retain their model and permissions; creating a native conversation is not Engine task admission.
+
+New and existing Codex inputs accept up to four PNG/JPEG/GIF/WebP images, 10 MB each. New conversations send typed `localImage` inputs rather than filenames in text. `@` offers indexed project folders; the master uses native folder chips, while external Codex inputs insert quoted paths. Folder references contain metadata, not file contents or execution/write authority. Private state directories are excluded.
+
+Disabled execution retains read-only project/session discovery, Engine binding, activity, deferred-input listing and knowledge tools. Empty Ticket lists do not describe all native work. The loopback, same-origin `POST /session-hub/api/diagnostics/vision` requires `{ "confirmed": true }` and performs one fixed synthetic image request to OpenAI Luna through the configured provider, without starting user Sessions or tools. It verifies image metadata and successful stream completion independently of Engine execution.
+
 `pnpm check` runs the typecheck, the tests and the build.
 
 ## License

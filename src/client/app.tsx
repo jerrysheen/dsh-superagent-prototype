@@ -18,11 +18,18 @@ import { ThreadPage } from './thread.tsx'
 import { TicketPage } from './ticket.tsx'
 import { TriggerStatus } from './trigger.tsx'
 import { When } from './widgets.tsx'
-import { SessionHubPage } from './session-hub.tsx'
+import { LocalWorkInput } from './local-work-input.tsx'
+import { LocalWorkHistory } from './local-work-history.tsx'
+import { KnowledgeGraphWindow } from './knowledge-graph.tsx'
+import type { KnowledgeNode } from '../app/knowledge-graph.ts'
+import { KnowledgeLibraryWindow } from './knowledge-library.tsx'
+import { AgentWorkspace } from './agent-workspace.tsx'
 
 export interface AppProps {
   t: T; openSession: (sessionId: string) => Promise<void>
   deploymentForm: DeploymentForm
+  openCodex?: (thread: KnowledgeNode) => void
+  renderChat?: (id: string, prepare: () => Promise<{ sessionId: string }>) => ReactNode
 }
 
 function Glossary({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -139,17 +146,37 @@ function Header({ masterId }: { masterId: string | undefined }) {
   </header>
 }
 
-function Pages({ route, openTab, deploymentForm }: { route: Route; openTab: (tab: Tab) => void; deploymentForm: DeploymentForm }) {
+function OverviewContent({ openCodex, renderChat }: Pick<AppProps, 'openCodex' | 'renderChat'>) {
+  const { state } = usePanelData()
+  const [view, setView] = useState<'agent' | 'library' | 'graph' | 'work'>(() => {
+    try { const saved = sessionStorage.getItem('dsh-overview-view-v2'); return saved === 'graph' || saved === 'work' || saved === 'library' ? saved : 'agent' }
+    catch { return 'agent' }
+  })
+  const choose = (value: 'agent' | 'library' | 'graph' | 'work') => {
+    setView(value)
+    try { sessionStorage.setItem('dsh-overview-view-v2', value) } catch { /* memory-only preference */ }
+  }
+  return <div className="dt-overview-area"><div className="dt-overview-switch">
+    <Button size="sm" onClick={() => choose('agent')} aria-pressed={view === 'agent'}>Agent 对话</Button>
+    <Button size="sm" onClick={() => choose('library')} aria-pressed={view === 'library'}>知识整理</Button>
+    <Button size="sm" onClick={() => choose('graph')} aria-pressed={view === 'graph'}>关系图谱</Button>
+    <Button size="sm" onClick={() => choose('work')} aria-pressed={view === 'work'}>工作与状态</Button>
+  </div>{view === 'agent' ? <AgentWorkspace renderChat={renderChat} /> : view === 'library' ? <KnowledgeLibraryWindow onOpenThread={openCodex} /> : view === 'graph' ? <KnowledgeGraphWindow /> : <div className="dt-overview-details">
+    {state?.coordinationMode === 'sessions' && <LocalWorkInput enabled={state.sessionExecution} paused={state.paused} />}
+    <OverviewPage />
+  </div>}</div>
+}
+
+function Pages({ route, openTab, deploymentForm, openCodex, renderChat }: { route: Route; openTab: (tab: Tab) => void; deploymentForm: DeploymentForm; openCodex?: AppProps['openCodex']; renderChat?: AppProps['renderChat'] }) {
   const { t } = usePanel()
   const { state, error, reload } = usePanelData()
   // Keep the active tab scrolled into view on narrow screens when routes change via links.
   useEffect(() => { document.getElementById(`dt-tab-${route.page}`)?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' }) }, [route.page])
-  if (state?.coordinationMode === 'sessions') return <SessionHubPage />
   const waiting = error ? <p className="dt-error" role="alert">{error.message}</p> : <p className="dt-hint">{t('loading')}</p>
   const page = (() => {
     switch (route.page) {
-      case 'overview': return <OverviewPage />
-      case 'source': return <SourceStatus />
+      case 'overview': return <OverviewContent openCodex={openCodex} renderChat={renderChat} />
+      case 'source': return <><SourceStatus />{state?.coordinationMode === 'sessions' && <LocalWorkHistory />}</>
       case 'trigger': return route.id !== undefined ? <ThreadPage key={route.id} id={route.id} target={route.query?.trigger} />
         : <TriggerStatus filter={route.query?.filter ?? 'subscribed'} />
       case 'eval': return <EvalStatus filter={route.query?.filter ?? 'work'} window={route.query?.window}
@@ -160,19 +187,21 @@ function Pages({ route, openTab, deploymentForm }: { route: Route; openTab: (tab
         deploymentForm={deploymentForm} /> : waiting
     }
   })()
-  return <div className="dt-page">
+  return <div className="dt-page dt-app-page">
     <div className="dt-column">
       <Header masterId={state?.masterId} />
       {error && state && <p className="dt-error" role="status">{error.message}</p>}
       <SegmentedTabs className="dt-tabs" label={t('pagesLabel')} value={route.page} onChange={openTab}
         items={TABS.map(value => ({ value, label: t(`tab.${value}`), id: `dt-tab-${value}`, panelId: 'dt-page' }))} />
-      <main id="dt-page" role="tabpanel" aria-labelledby={`dt-tab-${route.page}`} className="dt-main">{page}</main>
+      <main id="dt-page" role="tabpanel" aria-labelledby={`dt-tab-${route.page}`} className={'dt-app-content' + (route.page === 'overview' ? ' dt-graph-page' : '')}>
+        <div className="dt-main">{page}</div>
+      </main>
     </div>
   </div>
 }
 
 /** Root panel component managing route history and shared panel state. */
-export function App({ t, openSession, deploymentForm }: AppProps) {
+export function App({ t, openSession, deploymentForm, openCodex, renderChat }: AppProps) {
   const [location, setLocation] = useState(initialLocation)
   useEffect(() => { remember(location) }, [location])
   // Preserve the last opened settings group across navigation so the Settings tab reopens at it.
@@ -185,6 +214,6 @@ export function App({ t, openSession, deploymentForm }: AppProps) {
   const openTab = useCallback((tab: Tab) => move(current => ({ stack: [], route: tab === 'settings'
     ? settingsRoute(lastSettingsGroup(current)) : { page: tab, id: undefined } })), [move])
   return <PanelProvider t={t} openSession={openSession} navigate={navigate} back={back} backLabel={routeLabel(t, location.stack.at(-1) ?? HOME)}>
-    <Pages route={location.route} openTab={openTab} deploymentForm={deploymentForm} />
+    <Pages route={location.route} openTab={openTab} deploymentForm={deploymentForm} openCodex={openCodex} renderChat={renderChat} />
   </PanelProvider>
 }

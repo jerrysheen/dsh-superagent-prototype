@@ -96,6 +96,9 @@ export function ExecutionSettings() {
           <h2 className="dt-block-title">{t('term.executor')}<InfoTip text={t('executorIntro')} /></h2>
           <Section title={t('executorModel')} hint={t('executorModelHint')}><ModelField id="dt-worker-model" value={value.model}
             onChange={model => edit({ model })} /></Section>
+          <Field label="Codex 原生模型" hint="留空使用原生模型目录的默认项；明确指定时不自动替换。与 DSH Worker 模型分开配置。">
+            <Input value={value.codexModel ?? ''} placeholder="原生目录默认模型" onChange={event => edit({ codexModel: event.target.value.trim() || null })} />
+          </Field>
           <Field label={t('maxWorkers')} hint={t('maxWorkersHint')}>
             <Input type="number" min={LIMITS.maxWorkers.min} max={LIMITS.maxWorkers.max} required value={value.maxWorkers}
               onChange={event => edit({ maxWorkers: event.target.value })} />

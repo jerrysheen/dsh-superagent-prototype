@@ -132,6 +132,7 @@ export function TicketPage({ id }: { id: string }) {
         message={t('retryConfirm', { title: data.title })}
         onConfirm={() => after(call('POST tickets/:id/retry', { id }))} />}
       {data.sessionId && <SessionButton variant="outline" sessionId={data.sessionId} />}
+      {data.nativeThreadId && <ActionLink href={'codex://threads/' + data.nativeThreadId}>Codex · {data.nativeModel ?? '原生 session'} ↗</ActionLink>}
     </PageHead>
     {error && <LoadState error={error} loading={false} />}
     <div className="dt-row-meta dt-status-line">
@@ -190,8 +191,8 @@ export function TicketPage({ id }: { id: string }) {
       </Details>
     </div>
     {data.actions.stop && <div className="dt-danger-zone">
-      <span className="dt-hint">{t('stopHint')}</span>
-      <ConfirmButton variant="outline" label={t('stop')} title={t('stopConfirmTitle')} message={t('stopConfirm', { title: data.title })}
+      <span className="dt-hint">{data.executionTransport === 'desktop' ? '此任务由桌面执行。这里仅停止 DSH 跟踪；要中断执行，请在桌面原会话点击停止。' : t('stopHint')}</span>
+      <ConfirmButton variant="outline" label={data.executionTransport === 'desktop' ? '停止 DSH 跟踪' : t('stop')} title={data.executionTransport === 'desktop' ? '停止跟踪此桌面任务' : t('stopConfirmTitle')} message={data.executionTransport === 'desktop' ? '停止 DSH 跟踪后，桌面会话仍可继续运行。要中断执行，请在桌面原会话点击停止。' : t('stopConfirm', { title: data.title })}
         onConfirm={() => after(call('POST tickets/:id/stop', { id }))} />
     </div>}
   </>

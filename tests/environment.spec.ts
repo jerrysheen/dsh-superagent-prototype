@@ -1,21 +1,26 @@
 import { execFile, spawn } from 'node:child_process'
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { delimiter, join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SENSITIVE_ENV_PATTERN, type SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
-import { GIT_LOCATION, agentVariables, credentialHelper, runAsWorker, verifyDirectory, withoutDirectory, workerBin, workerGitConfig, writeEnvironment }
+import { GIT_LOCATION, agentVariables, credentialHelper, runAsWorker, verifyDirectory, verifyEnvironment, withoutDirectory, workerBin, workerGitConfig, writeEnvironment }
   from '../src/infra/environment.ts'
 import { CliError } from '../src/infra/commands.ts'
 import { testDeployment } from './fixtures/deployment.ts'
 import { gitEnv } from './fixtures/git.ts'
+import { execNative } from '../src/infra/native-command.ts'
 
 // Git and shell subprocesses can exceed the 5s default timeout when the test suite runs in parallel.
 vi.setConfig({ testTimeout: 30_000 })
 const exec = promisify(execFile)
 let dir: string
-const program = (path: string, body: string): string => { writeFileSync(path, `#!/bin/sh\n${body}\n`); chmodSync(path, 0o755); return path }
+const program = (path: string, body: string): string => {
+  writeFileSync(path + '.cjs', body)
+  writeFileSync(path + '.cmd', '@echo off\r\n"' + process.execPath + '" "' + path + '.cjs" %*\r\n')
+  return path + '.cmd'
+}
 /** Worker shell environment after DSH strips credential-shaped variables. */
 const workerEnv = (env: Record<string, string | undefined>): Record<string, string> =>
   Object.fromEntries(Object.entries(env).filter((entry): entry is [string, string] => entry[1] !== undefined && !SENSITIVE_ENV_PATTERN.test(entry[0])))
@@ -23,38 +28,48 @@ beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'environment-')); mkdirSync(
 afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
 
 describe('worker shims', () => {
+  it('preserves literal argv and isolates accounts through both native shim formats', async () => {
+    const cli = program(join(dir, 'agent cli'), 'console.log(JSON.stringify({args:process.argv.slice(2),ambient:!!process.env.GH_TOKEN,identity:!!process.env.GIT_AUTHOR_NAME}))')
+    await writeEnvironment(testDeployment({ stateDir: dir, github: { ...testDeployment().github, cli } }), [])
+    const args = ['a&b', '%PATH%', 'quote"value', '', '中文', '$(whoami)']
+    for (const suffix of ['.cmd', '.ps1']) {
+      const output = await execNative(join(workerBin(dir), 'gh' + suffix), args, { env: { ...process.env, GH_TOKEN: 'fixture', GIT_AUTHOR_NAME: 'fixture' } })
+      expect(JSON.parse(output.stdout)).toEqual({ args, ambient: false, identity: false })
+    }
+    await expect(verifyEnvironment(testDeployment({ stateDir: dir }), subprocess(workerGitConfig(dir)), new AbortController().signal)).resolves.toBeUndefined()
+  })
   it('run a wrapper that calls `gh` by name without reaching the shim again, and keep the caller\'s other PATH entries', async () => {
-    program(join(dir, 'real', 'gh'), 'echo "{\\"login\\":\\"agent-bot\\",\\"config\\":\\"$GH_CONFIG_DIR\\",\\"path\\":\\"$PATH\\"}"')
-    const wrapper = program(join(dir, 'gh-agent'), `GH_CONFIG_DIR=${dir}/agent-config exec gh "$@"`)
+    program(join(dir, 'real', 'gh'), 'console.log(JSON.stringify({login: "agent-bot", config: process.env.GH_CONFIG_DIR, path: process.env.PATH}))')
+    const wrapper = join(dir, 'gh-agent.cmd'); writeFileSync(wrapper, '@echo off\r\nset "GH_CONFIG_DIR=' + join(dir, 'agent-config') + '"\r\ncall gh %*\r\n')
     await writeEnvironment(testDeployment({ stateDir: dir, github: { ...testDeployment().github, cli: wrapper }, feishu: undefined }), [])
     const bin = workerBin(dir)
-    const path = [bin, join(dir, 'venv'), join(dir, 'real'), '/usr/bin', '/bin'].join(':')
-    const { stdout } = await exec('gh', ['api', 'user'], { env: { PATH: path }, timeout: 10_000 })
-    expect(JSON.parse(stdout)).toEqual({ login: 'agent-bot', config: `${dir}/agent-config`, path: [join(dir, 'venv'), join(dir, 'real'), '/usr/bin', '/bin'].join(':') })
+    const path = [bin, join(dir, 'venv'), join(dir, 'real'), process.env.PATH ?? ''].join(delimiter)
+    const { stdout } = await execNative('gh', ['api', 'user'], { env: { ...process.env, PATH: path }, timeout: 10_000 })
+    expect(JSON.parse(stdout)).toEqual({ login: 'agent-bot', config: join(dir, 'agent-config'), path: [join(dir, 'venv'), join(dir, 'real'), process.env.PATH ?? ''].join(delimiter) })
   })
   it('make `lark-cli` fail without a Feishu bot and each blocked command fail with the agent\'s login', async () => {
     await writeEnvironment(testDeployment({ stateDir: dir, feishu: undefined }), ['personal-gh'])
     const bin = workerBin(dir)
-    await expect(exec(join(bin, 'lark-cli'), ['im', '+chat-list'])).rejects.toMatchObject({ code: 1, stderr: 'lark-cli is unavailable: this installation has no Feishu bot.\n' })
-    await expect(exec(join(bin, 'personal-gh'), [])).rejects.toMatchObject({ code: 1, stderr: 'personal-gh is blocked in this installation; use gh, which acts as agent-bot.\n' })
+    await expect(execNative(join(bin, 'lark-cli.cmd'), ['im', '+chat-list'])).rejects.toMatchObject({ code: 1, stderr: 'lark-cli is unavailable: this installation has no Feishu bot.\n' })
+    await expect(execNative(join(bin, 'personal-gh.cmd'), [])).rejects.toMatchObject({ code: 1, stderr: 'personal-gh is blocked in this installation; use gh, which acts as agent-bot.\n' })
   })
   it('keep `gh` and `lark-cli` working, and shim no `git`, when the blocked commands name the commands workers need', async () => {
-    const gh = program(join(dir, 'gh-agent'), 'echo gh "$@"'), lark = program(join(dir, 'lark-bot'), 'echo lark "$@"')
+    const gh = program(join(dir, 'gh-agent'), 'console.log("gh " + process.argv.slice(2).join(" "))'), lark = program(join(dir, 'lark-bot'), 'console.log("lark " + process.argv.slice(2).join(" "))')
     const base = testDeployment()
     await writeEnvironment(testDeployment({ stateDir: dir, github: { ...base.github, cli: gh }, feishu: { ...base.feishu!, cli: lark } }), ['gh', 'git', 'lark-cli'])
     const bin = workerBin(dir)
-    expect([(await exec(join(bin, 'gh'), ['api', 'user'])).stdout, (await exec(join(bin, 'lark-cli'), ['im'])).stdout]).toEqual(['gh api user\n', 'lark im\n'])
+    expect([(await execNative(join(bin, 'gh.cmd'), ['api', 'user'])).stdout, (await execNative(join(bin, 'lark-cli.cmd'), ['im'])).stdout]).toEqual(['gh api user\n', 'lark im\n'])
     expect(readdirSync(bin)).not.toContain('git')
   })
   it('replace only what dsh-superagent wrote and refuse anything else in its places', async () => {
     await writeEnvironment(testDeployment({ stateDir: dir }), ['old-cli'])
     await writeEnvironment(testDeployment({ stateDir: dir }), [])
-    expect(readdirSync(workerBin(dir)).sort()).toEqual(['gh', 'lark-cli'])
+    expect(readdirSync(workerBin(dir)).sort()).toEqual(['gh.cjs', 'gh.cmd', 'gh.ps1', 'lark-cli.cjs', 'lark-cli.cmd', 'lark-cli.ps1'])
     // A file that merely contains the marker on a later line, a symlink to a shim, and a foreign gitconfig are all rejected.
-    writeFileSync(join(workerBin(dir), 'notes'), `notes\nmore\n${readFileSync(join(workerBin(dir), 'gh'), 'utf8').split('\n')[1]}\n`)
+    writeFileSync(join(workerBin(dir), 'notes'), `notes\nmore\n${readFileSync(join(workerBin(dir), 'gh.cmd'), 'utf8').split('\n')[1]}\n`)
     await expect(writeEnvironment(testDeployment({ stateDir: dir }), [])).rejects.toThrow(`${join(workerBin(dir), 'notes')} was not written by dsh-superagent`)
     rmSync(join(workerBin(dir), 'notes'))
-    symlinkSync(join(workerBin(dir), 'gh'), join(workerBin(dir), 'link'))
+    symlinkSync(join(workerBin(dir), 'gh.cmd'), join(workerBin(dir), 'link'))
     await expect(writeEnvironment(testDeployment({ stateDir: dir }), [])).rejects.toThrow('link was not written by dsh-superagent')
     rmSync(join(workerBin(dir), 'link'))
     writeFileSync(workerGitConfig(dir), '[user]\n\tname = someone\n')
@@ -64,9 +79,9 @@ describe('worker shims', () => {
   it('replaces the files it wrote under the project\'s earlier names', async () => {
     await writeEnvironment(testDeployment({ stateDir: dir }), ['old-cli', 'older-cli'])
     const legacy = (file: string, name: string) => writeFileSync(file, readFileSync(file, 'utf8').replace('Written by dsh-superagent', `Written by ${name}`))
-    legacy(join(workerBin(dir), 'old-cli'), 'dsh-tag'); legacy(join(workerBin(dir), 'older-cli'), 'dsh-freelancer'); legacy(workerGitConfig(dir), 'dsh-go')
+    legacy(join(workerBin(dir), 'old-cli.cmd'), 'dsh-tag'); legacy(join(workerBin(dir), 'older-cli.cmd'), 'dsh-freelancer'); legacy(workerGitConfig(dir), 'dsh-go')
     await writeEnvironment(testDeployment({ stateDir: dir }), [])
-    expect(readdirSync(workerBin(dir)).sort()).toEqual(['gh', 'lark-cli'])
+    expect(readdirSync(workerBin(dir)).sort()).toEqual(['gh.cjs', 'gh.cmd', 'gh.ps1', 'lark-cli.cjs', 'lark-cli.cmd', 'lark-cli.ps1'])
     expect(readFileSync(workerGitConfig(dir), 'utf8')).toContain('Written by dsh-superagent')
   })
 })
@@ -84,7 +99,7 @@ describe('agent git configuration', () => {
     await git('init', '-q', 'repo')
     await exec('git', ['-C', 'repo', 'remote', 'add', 'origin', 'git@github.com:acme/widgets.git'], { cwd: dir, env })
     expect(await git('-C', 'repo', 'remote', 'get-url', '--push', 'origin')).toBe('https://github.com/acme/widgets.git')
-    expect(await git('config', '--show-origin', '--get-all', 'credential.https://github.com.helper')).toBe(`file:${workerGitConfig(dir)}\t${credentialHelper('/opt/agent tools/gh')}`)
+    expect(await git('config', '-z', '--show-origin', '--get-all', 'credential.https://github.com.helper')).toBe(`file:${workerGitConfig(dir)}\0${credentialHelper(join(workerBin(dir), 'gh.cjs'))}\0`)
     expect(await git('config', '--get-all', 'credential.helper')).toBe('')
     await expect(git('config', 'commit.gpgsign')).rejects.toThrow()
     await expect(git('config', 'core.abbrev')).rejects.toThrow()
@@ -98,8 +113,8 @@ describe('agent git configuration', () => {
 
 it('fails instead of asking the operator\'s askpass helpers when the agent\'s credential helper has no answer', async () => {
   const log = join(dir, 'asked')
-  const askpass = program(join(dir, 'askpass'), `echo asked >> ${log}; echo operator-secret`)
-  const agent = program(join(dir, 'real', 'gh'), 'exit 0')
+  const askpass = program(join(dir, 'askpass'), `require('node:fs').appendFileSync(${JSON.stringify(log)}, 'asked\\n'); console.log('operator-secret')`)
+  const agent = program(join(dir, 'real', 'gh'), 'process.exit(0)')
   const deployment = testDeployment({ stateDir: dir, github: { ...testDeployment().github, cli: agent } })
   await writeEnvironment(deployment, [])
   const env = workerEnv({ PATH: process.env.PATH, HOME: dir, GIT_ASKPASS: askpass, SSH_ASKPASS: askpass, ...agentVariables(dir) })
@@ -113,9 +128,9 @@ it('fails instead of asking the operator\'s askpass helpers when the agent\'s cr
 
 it('removes every spelling of a directory from PATH and keeps the other entries', () => {
   mkdirSync(join(dir, 'state', 'worker-bin'), { recursive: true })
-  symlinkSync(join(dir, 'state'), join(dir, 'link'))
+  symlinkSync(join(dir, 'state'), join(dir, 'link'), 'junction')
   const bin = join(dir, 'state', 'worker-bin')
-  expect(withoutDirectory([`${bin}/`, join(dir, 'link', 'worker-bin'), '/usr/bin', 'node_modules/.bin'].join(':'), bin)).toBe('/usr/bin:node_modules/.bin')
+  expect(withoutDirectory([`${bin}/`, '"' + bin.toUpperCase() + '"', join(dir, 'link', 'worker-bin'), 'C:\\Windows\\System32', 'node_modules/.bin'].join(delimiter), bin)).toBe(['C:\\Windows\\System32', 'node_modules/.bin'].join(delimiter))
 })
 
 /** Minimal SubprocessRuntime backed by child_process.spawn with an isolated global git config. */
@@ -126,7 +141,7 @@ const subprocess = (config: string): SubprocessRuntime => ({
     child.stdout.on('data', chunk => { output.stdout += String(chunk) })
     child.stderr.on('data', chunk => { output.stderr += String(chunk) })
     const reader = (name: 'stdout' | 'stderr') => ({ readFrom: () => ({ text: output[name], nextOffset: 0, lossy: false }) })
-    const done = new Promise(resolve => child.on('close', code => resolve({ exitCode: code, signal: null })))
+    const done = new Promise((resolve, reject) => { child.on('error', reject); child.on('close', code => resolve({ exitCode: code, signal: null })) })
     return { done, collected: { stdout: reader('stdout'), stderr: reader('stderr') } }
   },
 }) as unknown as SubprocessRuntime
@@ -154,7 +169,7 @@ describe('ticket directory check', () => {
     await expect(check('repo')).rejects.toThrow(/bad config/)
   })
   it('reports a failed command\'s exit status', async () => {
-    const failing = ['sh', '-c', 'echo nope >&2; exit 3']
+    const failing = [process.execPath, '-e', 'console.error("nope"); process.exit(3)']
     const error = await runAsWorker(subprocess(join(dir, 'global')), failing, dir, signal).catch((e: unknown) => e)
     expect(error).toBeInstanceOf(CliError)
     expect(error).toMatchObject({ message: 'nope', exitCode: 3 })

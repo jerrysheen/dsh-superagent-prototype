@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, useState, type ComponentType } from 'react'
+import { act, useState, type ComponentType, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, expect, it, vi } from 'vitest'
 import { ApiError, caller, usePoll } from '../src/client/api.ts'
@@ -16,11 +16,16 @@ function fixture(listed: string[]) {
   const entries: Entry[] = []
   const dictionaries: Record<string, unknown> = {}
   const ctx = {
-    slots: { inject: (_name: string, register: () => void) => register(), register: (options: Entry['options'], component: Entry['component']) => { entries.push({ options, component }); return () => {} } },
+    slots: { inject: (_name: string, register: () => unknown) => { const result = register(); if (result && typeof result === 'object' && Symbol.iterator in result) [...result as Iterable<unknown>] }, register: (options: Entry['options'], component: Entry['component']) => { entries.push({ options, component }); return () => {} } },
     locale: { register: (ns: string, value: unknown) => { dictionaries[ns] = value; return () => {} }, bind: () => t },
     effect: (effect: () => unknown) => { effect() },
-    sessions: { list: { getSnapshot: () => ({ phase: 'ready', byId: Object.fromEntries(listed.map(id => [id, {}])) }) }, refresh: vi.fn(async () => {}) },
+    inject: (_services: string[], callback: (scope: unknown) => void) => callback({
+      effect: (effect: () => unknown) => { effect() }, inputTriggers: { registerSource: vi.fn(() => () => {}) },
+    }),
+    sessions: { list: { getSnapshot: () => ({ phase: 'ready', byId: Object.fromEntries(listed.map(id => [id, {}])) }) }, refresh: vi.fn(async () => {}),
+      retain: vi.fn(() => ({ ready: Promise.resolve(), release: vi.fn() })) },
     uiWorkspace: { openSession: vi.fn() },
+    layout: { selectPanel: vi.fn() },
     // Omit config form service so Deployment renders read-only.
     get: () => undefined,
   }
@@ -31,17 +36,23 @@ function fixture(listed: string[]) {
 async function render(entry: Entry, props: Record<string, unknown>) {
   const container = document.createElement('div'); document.body.append(container)
   const root = createRoot(container)
-  await act(async () => { root.render(<entry.component {...props} />) })
+  await act(async () => { root.render(<entry.component renderSlot={() => null} SessionProvider={({ children }: { children: ReactNode }) => <>{children}</>} {...props} />) })
   for (let i = 0; i < 5; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
   return { container, dispose: () => { act(() => { root.unmount() }); container.remove() } }
 }
 const openMaster = async (container: HTMLElement) => {
+  const manage = [...container.querySelectorAll('button')].find(item => item.textContent === '管理')
+  if (manage) {
+    await act(async () => { manage.click() })
+    for (let i = 0; i < 5; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+  }
   const button = [...container.querySelectorAll('button')].find(item => item.textContent === zh.openMaster)!
   await act(async () => { button.click() })
   for (let i = 0; i < 5; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
 }
 const serve = () => vi.stubGlobal('fetch', vi.fn(async (url: string) => {
   const path = new URL(url, 'http://127.0.0.1').pathname.replace('/orchestrator/api/', '')
+  if (path === 'master/open') return Response.json({ sessionId: 'master' })
   if (path === 'overview') return Response.json({ problems: [], person: [], executor: { running: 0, queued: 0, maxWorkers: 3, idle: 0 }, flow: { triggers: 0, filtered: 0, judged: 0, accepted: 0, evaluating: 0 }, policyVersion: 'v' })
   if (path === 'state') return Response.json({ masterId: 'master', settings: SettingsSchema.parse({}), revisions: { policy: 0, eval: 0, executor: 0 }, sources: [], policy_version: 'v', health: {}, outgoing: [], load: { running: 0, queued: 0 },
     setup: { machine: { stateDir: '/srv/state', worktreeRoot: '/srv/state/worktrees', blockedCommands: [], promptMaxChars: 100000, admissionContextMaxPages: 10, admissionContextTimeoutMs: 15000 }, problem: null, feishuProblem: null, accounts: null } })
@@ -51,12 +62,23 @@ afterEach(() => { vi.unstubAllGlobals() })
 
 it('registers a localized main panel, sidebar entry and Plugin Manager row page, and no settings section', () => {
   const { entries, dictionaries, main, nav } = fixture([])
-  expect(entries.map(entry => entry.options.name)).toEqual(['main', 'sidebar.panellist', 'plugins.row.config'])
-  expect(entries[2]!.options).toMatchObject({ key: 'dsh-superagent#dsh-superagent', locale: 'dshSuperagent' })
+  expect(entries.map(entry => entry.options.name)).toEqual(['main', 'superagent.agent-chat', 'main', 'sidebar.panellist', 'sidebar.footer.action', 'plugins.row.config'])
+  expect(entries[5]!.options).toMatchObject({ key: 'dsh-superagent#dsh-superagent', locale: 'dshSuperagent' })
   expect(Object.keys(dictionaries)).toEqual(['dshSuperagent'])
   expect(main.options).toMatchObject({ key: 'dsh-superagent', locale: 'dshSuperagent' })
   expect(nav.options).toMatchObject({ id: 'dsh-superagent', order: 10, locale: 'dshSuperagent' })
   expect(nav.options.label?.()).toBe('Superagent')
+})
+
+it('opens Superagent Agent chat on a fresh boot instead of the previously remembered page', () => {
+  sessionStorage.setItem('dsh-superagent/route', JSON.stringify({ route: { page: 'settings', query: { group: 'execution' } }, stack: [] }))
+  sessionStorage.setItem('dsh-overview-view-v2', 'graph')
+  const { ctx } = fixture([])
+  expect(ctx.layout.selectPanel).toHaveBeenCalledExactlyOnceWith('dsh-superagent')
+  expect(sessionStorage.getItem('dsh-superagent/route')).toBeNull()
+  expect(sessionStorage.getItem('dsh-overview-view-v2')).toBeNull()
+  expect(ctx.sessions.retain).not.toHaveBeenCalled()
+  expect(ctx.uiWorkspace.openSession).not.toHaveBeenCalled()
 })
 
 it('opens a listed Session through the workspace from the main panel', async () => {

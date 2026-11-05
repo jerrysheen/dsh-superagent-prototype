@@ -173,7 +173,10 @@ export class Settings {
       const delivery = await sessions.delivery(`settings:${block}`)
       return { saved: true, revision: store.blockRevision(block), policy_changed: false, restarting: false, context_delivery: delivery }
     }
-    const restarting = setupChanged(old, settings) || !this.host.setup.configured()
+    // In sessions mode Runtime is configured without a GitHub/Feishu Setup deployment.
+    // Use the SourceHost's runtime readiness, not Setup.configured(), or every Eval-model
+    // change unnecessarily triggers a DSH restart and interrupts local coordinator tests.
+    const restarting = setupChanged(old, settings) || !(this.host.sourceHost.configured?.() ?? this.host.setup.configured())
     const before = policyVersion(old), after = policyVersion(settings)
     const scope = (version: SettingsValue) => ({
       scope: (input: { source: string; meta: Record<string, unknown> }) => this.host.sources.scope(input, version) })

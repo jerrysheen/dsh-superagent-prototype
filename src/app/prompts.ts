@@ -128,6 +128,16 @@ export interface DefaultChange { part: string; base?: string; previous?: string;
  * Thrown by `Prompts.save` and translated into an HTTP 409 response by the management routes.
  */
 export class PromptConflict extends Error {}
+const LOCAL_DRIVER_CONTEXT = `Local execution adapter: the source is local-work, not a GitHub task source.
+For historical target discovery use search_projects, search_sessions with semantic paraphrases, get_context_card and get_work_binding when available. Preserve the user's new-versus-continuation intent. Resolve unique evidence directly; offer only 2–3 relevant choices when ambiguous. An unbound native-session lookup never authorizes attaching a Trigger to an unrelated Engine Ticket or sending to that native session.
+For current progress use get_session_activity and report its source/time. Historical card timestamps and notLoaded never prove completion. For an explicitly authorized read-only follow-up after another session finishes, use defer_session_work with its exact native target; never stop/steer that external turn. Unknown, stale, failed or waiting-user observations do not release deferred work. Deferred submission is only input delivery to the original Engine; inspect normal work results for actual completion.
+The original Engine owns routing, authorization, Ticket/Assignment state and reports.
+Work only in the assigned existing workspace under its permission preset.
+Deliver the requested local result through orchestrator_report; a PR is not required.
+Repository/PR/account instructions above apply only when explicitly authorized by the user.
+Do not create PRs, push, send external messages, or enable auto-merge as part of local execution.
+Never use Computer Use or simulated desktop input. Do not read credentials, private session histories or runtime databases.
+For cross-ticket context, use original ticket resources and orchestrator_ticket_note; an index lookup does not authorize resuming another native session.`
 /**
  * Stores numbered prompt configurations in `Store` via `Versions` and composes role system prompts and skills with the execution environment.
  * `Sessions` reads the composed prompts and skills for orchestrator and worker runs, while management routes and tools validate, preview, and save revisions through it.
@@ -135,16 +145,17 @@ export class PromptConflict extends Error {}
 export class Prompts {
   private readonly versions: Versions<PromptVersion>
   constructor(private readonly store: Store, private readonly maxChars: () => number, private readonly environment: () => Variable[] | undefined,
-    private readonly feishu: () => boolean) {
+    private readonly feishu: () => boolean, private readonly local = false) {
     this.versions = new Versions(store, KV.prompts.revision, KV.prompts.version)
   }
   /** A role's prompt; the main Session's Policy section follows the settings as they are now, at each model request. */
   compose(config: PromptConfig, role: Role, variables = this.environment()): string {
-    return composePrompt(config, role, environmentSection(config, variables), role === 'orchestrator' ? policySection(this.store.settings(), config) : undefined)
+    const text = composePrompt(this.local ? { ...config, delivery: '' } : config, role, environmentSection(config, variables), role === 'orchestrator' ? policySection(this.store.settings(), config) : undefined)
+    return text + (this.local ? '\n\n' + LOCAL_DRIVER_CONTEXT : '')
   }
   /** Returns skills to register in every Session: built-in Source skills (`feishu` only when a Feishu bot is configured) followed by team skills. */
   skills(config: PromptConfig): [string, string][] {
-    return [...this.feishu() ? ['feishu'] : [], 'github', ...Object.keys(config.skills)].map(name => [name, composeSkill(config, name)])
+    return [...this.feishu() ? ['feishu'] : [], ...this.local ? [] : ['github'], ...Object.keys(config.skills)].map(name => [name, composeSkill(config, name)])
   }
   current(): PromptVersion {
     const revision = this.versions.revision()
@@ -195,8 +206,10 @@ export class Prompts {
   preview(value: unknown) {
     const config = this.validate(value)
     const environment = environmentSection(config, this.environment()), policy = policySection(this.store.settings(), config)
-    return { orchestrator: composePrompt(config, 'orchestrator', environment, policy), worker: composePrompt(config, 'worker', environment),
-      parts: { orchestrator: promptParts(config, 'orchestrator', environment, policy), worker: promptParts(config, 'worker', environment) },
+    const effective = this.local ? { ...config, delivery: '' } : config
+    const extra = this.local ? [{ name: 'runtime/local-adapter', kind: 'generated' as const, key: 'runtime/local-adapter', text: LOCAL_DRIVER_CONTEXT }] : []
+    return { orchestrator: this.compose(config, 'orchestrator'), worker: this.compose(config, 'worker'),
+      parts: { orchestrator: [...promptParts(effective, 'orchestrator', environment, policy), ...extra], worker: [...promptParts(effective, 'worker', environment), ...extra] },
       skills: Object.fromEntries(this.skills(config)), scope: 'Team sections, skills, and overrides of built-in parts, which follow their built-in text until overridden. Workers additionally inherit the host prompt and repository AGENTS.md. Prompt text changes what the agents are told, not what dsh-superagent allows: tool permissions, the gate and account wrappers stay.' }
   }
   save(value: unknown, baseRevision: number, source: SettingsOrigin): PromptVersion {

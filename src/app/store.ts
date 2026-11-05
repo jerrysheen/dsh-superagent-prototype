@@ -1,6 +1,6 @@
 /** SQLite persistence for domain aggregates, key-value state, settings history, and the channel outbox. */
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite'
-import { chmodSync, mkdirSync } from 'node:fs'
+import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { key, threadKey, type ChannelRef, type Decision, type OutboundMessage, type ReplyStatus, type Repositories, type Thread, type ThreadFact,
   type ThreadFacts, type Ticket, type Trigger, type TriggerDisposition } from '../core/index.ts'
@@ -9,6 +9,7 @@ import { SettingsSchema, type Settings, type SettingsOrigin, type SettingsSave }
 import { OLDEST_SCHEMA, SCHEMA_VERSION, migrateTo11, tooOld } from './migration.ts'
 import { Versions } from './versions.ts'
 import { storeReads } from './store-read.ts'
+import { privatePath } from '../infra/private-files.ts'
 
 /** A Trigger's position on its thread timeline, ordered by timestamp and then `id` as tie-breaker. */
 export interface TimelinePlace { at: string; id: string }
@@ -57,10 +58,11 @@ export class Store implements Repositories {
    */
   constructor(path: string, private readonly report: (error: unknown) => void = () => {}) {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
+    privatePath(dirname(path), true)
     this.db = new DatabaseSync(path)
     this.read = storeReads(this.db)
     try {
-      chmodSync(path, 0o600)
+      privatePath(path, false)
       this.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
       const version = this.get(KV.store.schema)
       if (version !== undefined && version > SCHEMA_VERSION) throw new Error(`Unsupported orchestrator database version ${version}`)

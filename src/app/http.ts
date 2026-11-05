@@ -53,6 +53,7 @@ export interface HttpHost {
   checkSetup(): void
   requestPass(): void
   models(): Promise<ModelCatalog>
+  openMasterChat(): Promise<{ sessionId: string }>
 }
 /**
  * Represents a client-facing 400 or 404 error raised during management route parsing or lookup.
@@ -94,8 +95,14 @@ function machineView({ stateDir, promptMaxChars, admissionContextMaxPages, admis
   return { stateDir, promptMaxChars: promptMaxChars.get(), admissionContextMaxPages: admissionContextMaxPages.get(),
     admissionContextTimeoutMs: admissionContextTimeoutMs.get() }
 }
+/** Session coordination works without a GitHub/Feishu deployment.
+ * Runtime.configured() means the session coordinator is usable, NOT that setup.deployment exists.
+ */
+function resolvedForHttp(runtime: HttpHost): Deployment | undefined {
+  return runtime.machine.coordinationMode === 'sessions' ? undefined : runtime.configured() ? runtime.deployment : undefined
+}
 function setupView(runtime: HttpHost) {
-  const resolved = runtime.configured() ? runtime.deployment : undefined
+  const resolved = resolvedForHttp(runtime)
   return {
     machine: machineView(runtime.machine), problem: runtime.setupProblem ?? null, feishuProblem: runtime.feishuProblem ?? null,
     accounts: resolved ? { repository: resolved.repository, agent: resolved.github.login, feishu: resolved.feishu ? { appId: resolved.feishu.appId, brand: resolved.feishu.brand, botId: resolved.feishu.botId, name: resolved.feishu.name } : null } : null,
@@ -104,19 +111,20 @@ function setupView(runtime: HttpHost) {
 /** Build the `/orchestrator/api/state` response consumed by the management panel and `scripts/dsh-superagent status` (`docs/006-deployment.md`). */
 export function stateView(runtime: HttpHost) {
   const settings = runtime.store.settings()
-  return { coordinationMode: runtime.machine.coordinationMode ?? 'repository', setup: setupView(runtime), load: { ...executorLoad(runtime.store, runtime.executor.activeCount()),
+  return { coordinationMode: runtime.machine.coordinationMode ?? 'repository', sessionExecution: runtime.machine.sessionExecution ?? false,
+    setup: setupView(runtime), load: { ...executorLoad(runtime.store, runtime.executor.activeCount()),
     maxWorkers: settings.executor.maxWorkers },
     masterId: runtime.masterId, paused: settings.paused, health: runtime.health }
 }
 const views = (runtime: HttpHost): ViewHost => ({ store: runtime.store, sources: runtime.sources, links: runtime.links() })
-const setupState = (runtime: HttpHost): SetupState => ({ deployment: runtime.configured() ? runtime.deployment : undefined,
+const setupState = (runtime: HttpHost): SetupState => ({ deployment: resolvedForHttp(runtime),
   problem: runtime.setupProblem, feishuProblem: runtime.feishuProblem })
 export type StateView = ReturnType<typeof stateView>
 /** Builds a ticket's detail view; `environment` is empty while waiting for setup because it requires the resolved deployment. */
 function ticketPage(runtime: HttpHost, id: string) {
   const detail = ticketDetail(views(runtime), id), ticket = runtime.store.tickets.get(id)
   if (!detail || !ticket) throw new RouteError(404, 'Ticket not found')
-  return { ...detail, environment: runtime.configured() ? runtime.ticketEnvironment(ticket) : [] }
+  return { ...detail, environment: resolvedForHttp(runtime) ? runtime.ticketEnvironment(ticket) : [] }
 }
 export type TicketPageView = ReturnType<typeof ticketPage>
 function promptsView(runtime: HttpHost, revision: number | undefined, offset: number) {
@@ -154,6 +162,7 @@ function routes(runtime: HttpHost): Routes {
   const promptBody = (input: { body: (maxBytes?: number) => Promise<unknown> }) => input.body(4 * runtime.machine.promptMaxChars.get() + 4096)
   return {
     'GET state': () => stateView(runtime),
+    'POST master/open': () => runtime.openMasterChat(),
     'GET overview': () => overview(views(runtime), runtime.health, policyVersion(store.settings()),
       executorLoad(store, runtime.executor.activeCount()), runtime.setupProblem ?? runtime.feishuProblem),
     'GET search': ({ query }) => search(views(runtime), query.q ?? '', runtime.sourceLinks),

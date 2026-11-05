@@ -6,6 +6,7 @@ import { allowedSender, listedBot } from '../../policy.ts'
 import type { ChannelLink, Localized } from '../../sources/kind.ts'
 import type { SourceRegistry } from '../../sources/registry.ts'
 import { workerSessionId } from '../../executor/dsh.ts'
+import { codexBinding } from '../../executor/codex-state.ts'
 import type { Store } from '../store.ts'
 import { attribute, markdown, plain, preview, readable } from './text.ts'
 
@@ -138,8 +139,16 @@ export function threadFacts(store: Store, thread: Thread) {
   return { key: thread.key, source: thread.ref.source, title: threadTitle(store, thread), ...url ? { url } : {}, facts: (thread.meta.facts ?? {}) as ThreadFacts }
 }
 export type ThreadFactsView = ReturnType<typeof threadFacts>
-export const ticketLine = (view: Snapshot, ticket: Ticket) => ({ ...ticketSummary(ticket),
-  threads: view.threadsOf(ticket.id).map(thread => threadFacts(view.store, thread)) })
+export const ticketLine = (view: Snapshot, ticket: Ticket) => {
+  const native = view.store.get(codexBinding(ticket.id))
+  const origin = view.store.triggers.get(ticket.origin.triggerId)
+  return { ...ticketSummary(ticket), ...(native ? { sessionId: '', nativeThreadId: native.threadId, nativeModel: native.model } : {}),
+    ...(origin?.source === 'local-work' ? { executionPermission: String(origin.meta.permission),
+      executionDestination: origin.meta.transport === 'desktop' ? '桌面 workspace' : origin.meta.executor === 'codex' ? 'Codex 后台执行' : 'DSH Worker',
+      executionTransport: origin.meta.transport === 'desktop' ? 'desktop' : 'app-server', desktopTracking: native?.tracking,
+      desktopProject: native?.desktop, desktopError: native?.desktopError, nativeWriter: native?.writer } : {}),
+    threads: view.threadsOf(ticket.id).map(thread => threadFacts(view.store, thread)) }
+}
 export function threadTitle(store: Pick<Store, 'read'>, thread: Thread): string {
   const label = attribute(thread.meta.label)
   if (label) return label

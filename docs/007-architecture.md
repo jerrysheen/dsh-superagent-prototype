@@ -32,6 +32,8 @@ flowchart TB
 
 Startup registers management routes and runs Setup. After setup resolves, it installs Session and Executor hooks, ensures the main Session exists, starts Policy syncs, resumes interrupted Assignments, and starts passes and effects. `ready` marks completion of startup.
 
+In sessions mode, repository Setup is not required. `sessionExecution` defaults to false: management and historical lookup remain available while the Engine loops are off. Explicit opt-in starts the same Engine, Assessor, Sessions, Executor, Effects and Passes with a local-work Source and native workspace/permission adapter. The adapter never changes the core domain lifecycle. Legacy SessionHub tasks remain read-only; new work and output use Trigger, Ticket, Assignment and Report.
+
 Shutdown cancels turns, waits for passes, effects and agents, restores the process environment, closes the Store and releases the lock. Source plugins inject Runtime as the `orchestrator` service through the narrow `SourceHost` interface.
 
 | Part | Module | Does |
@@ -291,6 +293,33 @@ Some generic modules still refer directly to GitHub or Feishu:
 
 | Path | Responsibility |
 | --- | --- |
+| `src/app/local-work.ts` | Local request Source and original Ticket result projection; workspace/workId thread identity and fixed execution permission |
+| `src/app/codex-relay.ts` | Explicit allowlisted native Codex question transport, separate from Engine task execution |
+| `src/client/codex-workspace.tsx` | Explicit native Codex question entry and access to management |
+| `src/client/codex-workspace-store.ts`, `codex-workspace.css` | Persisted native question workspace UI state and styling |
+| `src/executor/local-dsh.ts` | Existing workspace and permission adapter for the original DSH Executor; rejects incompatible attached or batched inputs |
+| `src/executor/native-worker.ts`, `codex-state.ts`, `codex-rpc.ts`, `codex.ts` | Native Codex execution port, durable thread/receipt binding, Windows App Server transport and original Engine callback adapter |
+| `src/app/session-activity.ts`, `deferred-work.ts` | Timestamped live observations and durable inputs waiting for idle before normal Engine submission |
+| `src/app/desktop-activity.ts` | Windows desktop app-tools pipe observer; periodic metadata-only list calls and reconnect |
+| `src/app/conversation-media.ts`, `src/client/conversation-image.tsx` | Scoped selected-message raster attachment capabilities and inline image presentation |
+| `src/infra/native-command.ts` | Windows executable/script dispatch, literal argv and descendant-aware cancellation |
+| `src/infra/private-files.ts` | POSIX private modes or Windows owner-only DACLs for persistent state and SQLite sidecars |
+| `src/client/native-controls.css` | Native control token alignment shared by the panel |
+| `src/app/context-catalog.ts`, `routing-intent.ts` | Bounded historical index and read-only lookup intent boundaries, independent of authorized task execution |
+| `src/app/context-targets.ts`, `target-resolver.ts` | Canonical project/session cards, original Ticket bindings and bounded read-only LLM tool discovery |
+| `src/client/target-finder.tsx` | Direct unique-target display, relevant ambiguity choices and original local-work form preparation |
+| `src/client/syntax-highlight.tsx`, `syntax-highlight.css` | Conversation code syntax presentation |
+| `src/app/codex-desktop-relay.ts`, `codex-local-client.ts`, `codex-transcript.ts` | Native desktop transport and bounded native reading adapters |
+| `src/app/knowledge-graph.ts`, `src/client/knowledge-graph.tsx`, `knowledge-graph.css`, `knowledge-layout.ts` | Separate knowledge index and graph presentation |
+| `src/client/graph-camera.ts`, `graph-marks.tsx` | Graph camera coordinates and independently rendered graph marks |
+| `src/client/graph-raster-layer.tsx`, `graph-raster.ts`, `knowledge-snapshot.ts`, `use-knowledge-layout.ts` | Graph raster presentation, stable snapshots and incremental layout |
+| `src/client/graph-layout-cache.ts` | Persisted graph layout positions |
+| `src/client/knowledge-communities.ts` | Knowledge graph community presentation |
+| `src/app/workspace-preview.ts`, `src/client/workspace-preview.tsx`, `workspace-link.ts` | Workspace reference parsing and bounded preview |
+| `src/client/conversation-index.tsx`, `conversation-markdown.tsx`, `shared-workspace-scroll.ts` | Conversation rendering, reference index and shared scroll integration |
+| `src/sources/cursor-local.ts` | Cursor identity-to-Trigger mapping for Engine boundary tests; not a deployed Cursor Executor |
+| `src/client/local-work-input.tsx`, `local-work-history.tsx` | Local Engine input form and read-only historical evidence/archive |
+| `src/client/hub-navigation.ts`, `native-ui-links.ts`, `session-panel-subnav.tsx` | Legacy session navigation state, native deeplinks and optional subnavigation component |
 | `src/index.ts` | The main plugin entry: reads the machine settings, starts the Runtime, and gives it the restart that a save of a Source's account uses |
 | `src/deployment.ts` | The plugin `Config` and `Machine`; `resolveDeployment` and `resolveFeishuBot` read the repository and the accounts from the Source settings, each CLI run as Executor shells run it; `SETUP_FIELDS` lists the Source fields setup reads. The code names no person, account or organization |
 | `src/setup.ts` | Setup problems: `SetupError`, with a code, the place that fixes it and the English text the log, the main Session and the panel share |
@@ -406,6 +435,29 @@ Some generic modules still refer directly to GitHub or Feishu:
 
 | Test | Covers |
 | --- | --- |
+| `tests/local-work.spec.ts`, `local-dsh.spec.ts`, `local-work-http.spec.ts`, `local-runtime.spec.ts`, `local-work-input.spec.tsx` | Local Source/driver boundaries, real Engine lifecycle and Router/worker callbacks with a synthetic host, default-off behavior, immutable permissions and original Ticket output |
+| `tests/native-command.spec.ts` | Native Windows script dispatch and exact adversarial argv preservation |
+| `tests/private-files.spec.ts` | Atomic Windows DACL repair for already-owned state without requesting unchanged ownership privileges |
+| `tests/codex-relay.spec.ts`, `codex-workspace.spec.tsx` | Explicit native question transport constraints and workspace UI, without real model calls |
+| `tests/codex-executor.spec.ts`, `codex-engine.spec.ts` | Native transport ordering, cancellation, recovery, immutable binding and original Engine worker slots/report callbacks |
+| `tests/session-activity.spec.ts` | Unknown/stale activity, workspace scope, pause/cancel/restart and immutable deferred delivery |
+| `tests/desktop-activity.spec.ts` | Readonly native pipe framing, reconnection, pagination and preserved last-confirmed activity |
+| `tests/conversation-media.spec.ts` | Raster validation and selected-thread attachment capability boundaries |
+| `tests/conversation-image.spec.tsx` | Scoped image loading, authenticated fetch, enlargement link and missing-attachment presentation |
+| `tests/codex-image-composer.spec.tsx` | Image upload/preview/send and cross-project Recent session navigation |
+| `tests/codex-image-http.spec.ts` | Upload capability scope, native multimodal queue delivery and request deduplication |
+| `tests/context-catalog.spec.ts`, `context-http.spec.ts` | Historical metadata retrieval without creating or executing work |
+| `tests/context-targets.spec.ts`, `target-resolver.spec.ts`, `target-http.spec.ts`, `target-finder.spec.tsx` | Project identity, semantic query expansion, tool-call validation, target bindings and user selection without automatic execution |
+| `tests/knowledge-graph-ui.spec.tsx` | Knowledge graph UI states and explicit model selection |
+| `tests/graph-camera.spec.tsx` | Graph camera navigation and rendering boundaries |
+| `tests/graph-raster.spec.ts`, `knowledge-layout-performance.spec.ts`, `knowledge-snapshot.spec.ts` | Graph raster, layout throughput and stable snapshot regressions |
+| `tests/graph-layout-cache.spec.ts` | Graph layout cache persistence regressions |
+| `tests/knowledge-communities.spec.ts` | Knowledge community regressions |
+| `tests/syntax-highlight.spec.tsx` | Code highlighting token rendering |
+| `tests/codex-desktop-relay.spec.ts`, `codex-transcript.spec.ts`, `conversation-markdown.spec.tsx`, `knowledge-graph.spec.ts`, `shared-workspace-scroll.spec.tsx`, `workspace-navigation.spec.tsx`, `workspace-preview.spec.ts` | Native transport, conversation presentation, knowledge graph and workspace reference regressions |
+| `tests/cursor-local-engine.spec.ts` | Cursor work identity, follow-ups and isolation through the original Engine |
+| `tests/http-sessions-mode.spec.ts`, `settings-sessions-model.spec.ts` | Management without repository Setup and model settings changes without unnecessary restart |
+| `tests/native-ui-links.spec.ts`, `session-hub-ui.spec.tsx`, `session-panel-subnav.spec.tsx` | Legacy session display/navigation and native application links |
 | `tests/core-engine.spec.ts` | Domain rules on in-memory repositories: receiving, Eval, fan-out, resume and stop, interrupted Assignments, the pause, Policy changes, reports and outcomes, attaching, replies, failed deliveries and dismissed problems |
 | `tests/stage.spec.ts` | The Ticket stages, row by row |
 | `tests/policy.spec.ts` | Source scope, the gate, the admission table, Mandate revalidation, the Policy version, settings migrations and assessment outcomes |
@@ -608,7 +660,7 @@ Most built-in instructions live in `prompts/*.md`, with one sentence per line jo
 
 ## Configuration reload
 
-Every plugin configuration key except `stateDir` is volatile. The panel's Deployment settings and DeepSeek Harness's Plugin Manager edit them through DeepSeek Harness's configuration form; the host writes `cordis.patch.yml` and updates the values in place, and dsh-superagent reads each limit when it uses it, so a change applies without a restart.
+The prompt/context limits are volatile. The panel's Deployment settings and DeepSeek Harness's Plugin Manager edit them through DeepSeek Harness's configuration form; the host updates these limits in place. `stateDir`, `coordinationMode` and `sessionExecution` are startup configuration and require remounting the plugin. Opting into local execution never changes the original persisted pause or sender authorization.
 
 A settings save that changes a Source field setup reads, such as an account's CLI, and any save while setup waits, restarts dsh-superagent. DeepSeek Harness's settings service does not serve the entry during that restart, so after its own restart dsh-superagent asks it to read the entry again, and an open form becomes editable again.
 

@@ -18,6 +18,10 @@ const RoutingNoteSchema = z.string().trim()
   .refine(text => wordCount(text) <= NOTE_WORDS, `Routing note must not exceed ${NOTE_WORDS} words (Chinese uses word segmentation). Shorten it; do not split it across deliveries.`)
   .describe(`Optional routing background or explicit human constraint, at most ${NOTE_WORDS} words. Never add implementation instructions or replace the original source.`)
 export interface MainToolsHost {
+  /** Optional read-only project/session discovery tools; never admit work or bypass Engine commands. */
+  contextTools?: Tool[]
+  /** Execution adapters may reject incompatible native workspace/permission bindings before a semantic attach. */
+  validateAttach?(ticketId: string, triggerId: string): void
   readonly context: Context
   readonly engine: Pick<EngineForMainSession, 'decide' | 'attach' | 'reply' | 'requestStatus' | 'note'> & EngineForPeople
   readonly store: Pick<Store, 'tickets' | 'triggers' | 'threads' | 'atomic' | 'replyStatus' | 'settings'>
@@ -104,6 +108,7 @@ function route(host: MainToolsHost, item: RouteItem, decided: ReadonlyMap<string
       return { ...fromDecision(decision), triggerIds: decision.triggerIds }
     }
     case 'attach': {
+      host.validateAttach?.(item.ticket_id!, item.trigger_id)
       const ticket = host.quietly(() => host.engine.attach(item.ticket_id!, item.trigger_id, item.note ?? undefined))
       return { reason: 'Attached: the ticket follows the trigger\'s thread and receives the trigger', ticketId: ticket.id }
     }
@@ -155,6 +160,7 @@ function routeTool(host: MainToolsHost): Tool {
 export function mainTools(host: MainToolsHost, agent: Agent): Tool[] {
   const resources: MainResourceHost = { ...host.resources, sessions: host.sessions, settings: host.settings }
   return [
+    ...host.contextTools ?? [],
     readTool('Read one page of a resource the resource parameter lists, such as the ticket list or a ticket. Follow next_offset, and next_resource where a page names one.',
       false, (resource, offset, limit, signal) => readResource(resources, resource, offset, limit, undefined, signal)),
     routeTool(host),

@@ -1,0 +1,16 @@
+/* Share the native code renderer's theme tokens; host theme changes apply without re-highlighting. */
+.cw-syntax { color: var(--shiki-foreground, inherit); }
+body:not([data-ds-dark-theme]) .cw-syntax { --shiki-token-keyword: #d6336c; --shiki-token-string: #2f9e44; --shiki-token-constant: #1c7ed6; --shiki-token-function: #6741d9; --shiki-token-parameter: #e8590c; --shiki-token-string-expression: #2b8a3e; --shiki-token-comment: #868e96; --shiki-token-punctuation: #495057; }
+.cw-syntax :is(.hljs-keyword,.hljs-selector-tag,.hljs-doctag,.hljs-meta .hljs-keyword) { color: var(--shiki-token-keyword, #c792ea); }
+.cw-syntax :is(.hljs-string,.hljs-regexp,.hljs-template-tag,.hljs-template-variable) { color: var(--shiki-token-string, #a5d6a7); }
+.cw-syntax :is(.hljs-number,.hljs-literal,.hljs-symbol,.hljs-bullet) { color: var(--shiki-token-constant, #f0b58a); }
+.cw-syntax :is(.hljs-title,.hljs-section) { color: var(--shiki-token-function, #82aaff); }
+.cw-syntax :is(.hljs-built_in,.hljs-type,.hljs-params) { color: var(--shiki-token-parameter, #e2c08d); }
+.cw-syntax :is(.hljs-attr,.hljs-attribute,.hljs-variable,.hljs-property,.hljs-selector-class,.hljs-selector-id) { color: var(--shiki-token-string-expression, #80cbc4); }
+.cw-syntax :is(.hljs-tag,.hljs-name) { color: var(--shiki-token-keyword, #c792ea); }
+.cw-syntax :is(.hljs-comment,.hljs-quote) { color: var(--shiki-token-comment, #8b949e); font-style: italic; }
+.cw-syntax :is(.hljs-meta,.hljs-link) { color: var(--shiki-token-punctuation, #9da5b4); }
+.cw-syntax .hljs-emphasis { font-style: italic; }
+.cw-syntax :is(.hljs-strong,.hljs-section) { font-weight: 600; }
+.cw-syntax .hljs-addition { color: var(--dsw-alias-status-success, #7fc69a); }
+.cw-syntax .hljs-deletion { color: var(--dsw-alias-status-danger, #ed8b8b); }

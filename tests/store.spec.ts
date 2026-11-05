@@ -9,6 +9,7 @@ import { MemoryRepositories, key, type Assignment, type Decision, type Repositor
 import { threadFacts } from '../src/app/views/records.ts'
 import { KV } from '../src/kv.ts'
 import { SettingsSchema } from '../src/policy.ts'
+import { execFileSync } from 'node:child_process'
 
 
 let directory: string
@@ -248,8 +249,24 @@ it('lists in the same order in SQLite and in memory, and undoes a failed nested 
 
 it('creates the state directory for its owner alone, and the database readable by its owner alone', () => {
   const path = join(directory, 'state', 'orchestrator.sqlite')
-  new Store(path).close()
-  expect([statSync(dirname(path)).mode & 0o777, statSync(path).mode & 0o777]).toEqual([0o700, 0o600])
+  const store = new Store(path)
+  try {
+  if (process.platform === 'win32') {
+    const inspect = String.raw`$ErrorActionPreference='Stop'; $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value; $result=@(); foreach($p in @($env:DSH_TEST_DIR,$env:DSH_TEST_DB)){ $acl=if([IO.Directory]::Exists($p)){[IO.Directory]::GetAccessControl($p)}else{[IO.File]::GetAccessControl($p)}; $rules=@($acl.Access | ForEach-Object { @{sid=$_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value; type=$_.AccessControlType.ToString(); rights=$_.FileSystemRights.ToString()} }); $result+=@{owner=$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value; protected=$acl.AreAccessRulesProtected; rules=$rules; expected=$sid} }; ConvertTo-Json -Depth 5 -Compress -InputObject $result`
+    const sidecars = inspect.replace('@($env:DSH_TEST_DIR,$env:DSH_TEST_DB)', '@($env:DSH_TEST_DIR,$env:DSH_TEST_DB,($env:DSH_TEST_DB+\'-wal\'),($env:DSH_TEST_DB+\'-shm\'))')
+    const entries = JSON.parse(execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', sidecars],
+      { encoding: 'utf8', windowsHide: true, env: { ...process.env,
+        PSModulePath: join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'Modules'),
+        DSH_TEST_DIR: dirname(path), DSH_TEST_DB: path } }))
+    expect(entries).toHaveLength(4)
+    for (const [index, entry] of entries.entries()) {
+      expect(entry.owner).toBe(entry.expected)
+      if (index < 2) expect(entry.protected).toBe(true)
+      expect(entry.rules).toHaveLength(1)
+      expect(entry.rules[0]).toEqual({ sid: entry.expected, type: 'Allow', rights: 'FullControl' })
+    }
+  } else expect([statSync(dirname(path)).mode & 0o777, statSync(path).mode & 0o777]).toEqual([0o700, 0o600])
+  } finally { store.close() }
 })
 
 it('reads `%` and `_` in a key prefix and a search query as written, not as patterns', () => {

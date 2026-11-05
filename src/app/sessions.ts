@@ -13,7 +13,8 @@ import { AgentDelivery, messageId } from './delivery.ts'
 import type { Effects } from './effects.ts'
 import type { Variable } from './execution-environment.ts'
 import { RetryHealth } from './retry-health.ts'
-import { initializeRoleModel } from './role-models.ts'
+import { initializeRoleModel, initializeMasterModel } from './role-models.ts'
+import { toolOutput } from './tool-output.ts'
 import { bundledSkills } from './skill-files.ts'
 import { SKILL_PREFIX, type PromptVersion, type Prompts } from './prompts.ts'
 import type { Store } from './store.ts'
@@ -22,6 +23,12 @@ import type { RegisterTool, Tool } from './tools/tool.ts'
 
 /** Host dependencies used by `Sessions`. */
 export interface SessionsHost {
+  /** Discussion-only master while the local task Engine is disabled. */
+  readonly masterChatOnly?: boolean
+  readonly managedWork?: boolean
+  /** Native execution adapter revalidates its workspace and assigns the permission preset before every delivery. */
+  beforePrompt?(ticket?: Ticket): Promise<void>
+  permission?(ticket?: Ticket): 'read-only' | 'workspace-write'
   /** DSH Cordis context: sessions, agents, persistence, and their events. */
   readonly context: Context
   readonly store: Pick<Store, 'tickets' | 'settings' | 'get' | 'set' | 'keys'>
@@ -76,8 +83,9 @@ const SLEEP = /(?:^|[;&|({!`\n]|\b(?:do|then|else|elif|if|while|until|time|exec|
  */
 function noWait({ name, arguments: input }: { name: string; arguments: unknown }, routed: () => boolean): string | undefined {
   const args = (input ?? {}) as { command?: unknown; timeoutMs?: unknown; run_in_background?: unknown; wait?: unknown; timeout_ms?: unknown }
-  if (name === 'bash') {
-    const sleeps = typeof args.command === 'string' && SLEEP.test(args.command)
+  if (name === 'bash' || name === 'pwsh') {
+    const sleeps = typeof args.command === 'string' && (name === 'bash' ? SLEEP.test(args.command)
+      : /(?:^|[;&|({\n])\s*(?:Start-Sleep|sleep)\b/i.test(args.command))
     if (sleeps || typeof args.timeoutMs === 'number' && args.timeoutMs > 30_000) return NO_WAIT
     if (args.timeoutMs === undefined && args.run_in_background !== true && !routed()) return DEFAULT_WAIT
   }
@@ -95,6 +103,7 @@ export class Sessions {
   /** Decorated agents mapped to their registered disposers and skill scope until the agent is disposed or `Sessions.dispose()` runs. */
   private readonly bindings = new Map<Agent, SessionBinding>()
   private readonly retryHealth = new RetryHealth()
+  private installed = false
   private readonly ctx: Context
   /** Registers ordered `relay` and `notice` effect handlers that deliver to the main Session. */
   constructor(private readonly host: SessionsHost) {
@@ -106,6 +115,8 @@ export class Sessions {
   }
   /** Subscribes to host agent and session events so newly created sessions are decorated and model-budget retries are reflected in health. Call once at startup. */
   install(): void {
+    if (this.installed) return
+    this.installed = true
     const ctx = this.ctx
     ctx.on('agent/disposed', ({ agent }) => {
       this.release(agent)
@@ -148,8 +159,10 @@ export class Sessions {
     if ('error' in result) throw result.error
     const settings = this.host.store.settings()
     await initializeRoleModel(ctx, result.agent, role === 'orchestrator' ? settings.eval.model : settings.executor.model)
+    if (role === 'orchestrator') await initializeMasterModel(ctx, result.agent, () => this.host.store.settings().eval.model)
     await this.decorate(result.agent)
-    ctx.permissionPresets.set(result.agent.session, 'danger-full-access')
+    const ticketId = ticketOfSession(id), ticket = ticketId ? this.host.store.tickets.get(ticketId) : undefined
+    ctx.permissionPresets.set(result.agent.session, this.host.permission?.(ticket) ?? 'danger-full-access')
     await ctx.sessionController.rename({ sessionId: id as SessionId, title })
     return result.agent
   }
@@ -163,6 +176,9 @@ export class Sessions {
     accepted?: () => void): Promise<void> {
     const result = await this.ctx.sessionController.resolveAgent(sessionId as SessionId)
     if ('error' in result) throw result.error
+    const ticketId = ticketOfSession(sessionId), ticket = ticketId ? this.host.store.tickets.get(ticketId) : undefined
+    await this.host.beforePrompt?.(ticket)
+    if (this.host.permission) this.ctx.permissionPresets.set(result.agent.session, this.host.permission(ticket))
     await this.agentDelivery.send(result.agent, key(requestId), text, mode, this.host.lifetime, authorize, accepted)
   }
   /** The id of the message `prompt` delivers under `requestId`, which DSH's inbox events name it by. */
@@ -211,7 +227,7 @@ export class Sessions {
           const image = value && typeof value === 'object' && 'image' in value ? (value as { image: never }).image : undefined
           return image ? [text, { type: 'image' as const, attachment: image }] : [text]
         } },
-        execute: (args, execution) => execute(schema.parse(args), execution.signal) }))
+        execute: async (args, execution) => toolOutput(await execute(schema.parse(args), execution.signal)) }))
     }
   }
   /** Returns `sessionId`'s active model-budget retry state (`{ model_retry }`) for status listings, or `{}` when not waiting on one. */
@@ -246,6 +262,9 @@ export class Sessions {
       const current = ticket && host.store.tickets.get(ticket.id)
       const composed = host.prompts.compose(version.config, master ? 'orchestrator' : 'worker', current ? host.environment(current) : undefined)
       return `[dsh-superagent prompt revision ${version.revision}]\n${composed}\n${current ? mandateInstructions(current.mandate) : ''}`
+        + (master && host.managedWork ? '\nLOCAL MANAGED WORK: Use list_managed_work to inspect allowed project directories, pending work cards and the original Engine ledger, including completed work. When the current human explicitly asks for work, locate its project and exact existing binding before calling prepare_managed_work. New independent work must not reuse a similar session; ambiguous continuation needs clarification. Preparation uses the original live human message and creates only a user-confirmable card, not a Ticket. Tell the user to confirm the card in this workspace. Only that UI confirmation admits work; @ references and lookup never authorize it. Do not claim execution until a receipt identifies a real Ticket. After confirmation, the original Engine routes candidates and owns execution; report progress from the actual ledger. Never send external messages, change policy, unpause with a tool or run shell commands to bypass confirmation. Native direct chats outside the Engine are not managed tasks.' : '')
+        + (master && host.managedWork ? '\nProject-history queries must combine read_project_progress with list_managed_work. The Engine ledger excludes work completed before intake was deployed; absent tickets do not mean no implementation or validation occurred. Repository progress records are attributed evidence, not a complete history or execution authority. project: IDs name projects, not worker sessions. Use search_sessions with projectId before choosing a session. Tool list results are objects with an items array.' : '')
+        + (master && host.masterChatOnly ? '\nTask execution is disabled. Discuss and plan with the user, and read task status when needed. Do not claim to dispatch, execute, send external messages, or change settings. Replies in this conversation are delivered directly to the user. An empty ticket list is not evidence that no work is in progress. Use read-only project/session discovery, binding and fresh activity tools to distinguish Engine tickets, unbound native sessions and unknown activity. Metadata is not conversation history or execution authority.' : '')
     }, ...(master ? { complete: true } : {}) }))
     // A recreated skill scope (e.g. after the skills service restarts) starts empty, so reset `binding.skills` before rebinding.
     const skillScope = agent.ctx.inject(['skills'], scope => {
@@ -260,7 +279,9 @@ export class Sessions {
     const register = this.registerTool(agent, binding)
     for (const tool of host.tools(agent, ticket)) register(tool.name, tool.description, tool.schema, tool.execute)
     if (master) {
-      binding.disposers.push(agent.ctx.tools.restrict({ allow: ['skill', 'bash', 'read', 'read_image', 'job_output', 'job_list', 'job_kill'] }),
+      const allow = (host.masterChatOnly || host.managedWork ? ['read', 'read_image'] : ['skill', 'bash', 'pwsh', 'read', 'read_image', 'job_output', 'job_list', 'job_kill'])
+        .filter(name => agent.ctx.tools.get(name, scopeParentOf(agent)))
+      binding.disposers.push(agent.ctx.tools.restrict({ allow }),
         agent.ctx.tools.guard(execution => noWait(execution, () => this.routed(agent))))
     } else {
       // An Executor Session keeps the profile's work tools it has, which DSH requires to be known; its own tools are not masked.

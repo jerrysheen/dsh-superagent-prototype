@@ -11,6 +11,37 @@ export async function resolveRoleModel(ctx: Context, model: RoleModel): Promise<
   return { provider: value.provider, model: value.model, ...(value.reasoningEffort ? { reasoningEffort: value.reasoningEffort } : {}) }
 }
 
+const managedMasters = new WeakSet<Agent>()
+/** Apply the live master-role setting on each assembled step, without changing DSH's global default. */
+export async function initializeMasterModel(ctx: Context, agent: Agent, configured: () => RoleModel | null): Promise<void> {
+  if (managedMasters.has(agent)) return
+  const initial = configured()
+  if (initial) {
+    const selected = await resolveRoleModel(ctx, initial)
+    agent.session.append('model/selection', selected)
+    await ctx.sessionPersistence.flush()
+  }
+  let assembled: ModelSelection | undefined
+  agent.ctx.effect(() => {
+    const disposers = [
+      agent.ctx.on('system-prompt/assemble', async (_assembly, _context, next) => {
+        const model = configured(), selected = model ? await resolveRoleModel(ctx, model) : undefined
+        const result = await next()
+        assembled = selected
+        return selected ? { ...result, variables: { ...result.variables, provider: selected.provider, model: selected.model } } : result
+      }, { prepend: true }),
+      agent.ctx.on('agent/request', async (_payload, next) => {
+        const result = await next()
+        if (!assembled) return result
+        const { reasoningEffort: _inherited, ...rest } = result
+        return { ...rest, ...assembled }
+      }, { prepend: true }),
+    ]
+    return () => disposers.forEach(dispose => dispose())
+  })
+  managedMasters.add(agent)
+}
+
 /** Seed a role's configured model onto a brand-new session before its first request, leaving later manual or durable selections intact. */
 export async function initializeRoleModel(ctx: Context, agent: Agent, model: RoleModel | null): Promise<void> {
   if (!model) return

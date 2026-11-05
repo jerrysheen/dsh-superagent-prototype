@@ -1,0 +1,70 @@
+/* Obsidian graph-view visual hierarchy: uninterrupted canvas, quiet marks, floating controls. */
+.kg-window { --kg-bg: var(--dsw-alias-bg-base, #fafafa); --kg-node: #737373; --kg-line: #777; --kg-panel: #f3f3f3; --kg-panel-border: #ddd; --kg-muted: #777; --kg-text: #333; --kg-accent: #9b7bd2; flex: 1; height: 100%; min-height: 0; overflow: hidden; position: relative; border: 0; border-radius: 0; background: var(--kg-bg); color: var(--kg-text); }
+body[data-ds-dark-theme] .kg-window { --kg-bg: #1e1e1e; --kg-node: #b3b3b3; --kg-line: #656565; --kg-panel: #262626; --kg-panel-border: #393939; --kg-muted: #999; --kg-text: #d4d4d4; }
+.kg-canvas { position: absolute; inset: 0; overflow: hidden; border: 0; background: var(--kg-bg); }
+.kg-canvas-title { position: absolute; top: 18px; left: 22px; z-index: 1; font-size: 13px; color: var(--kg-muted); pointer-events: none; }
+.kg-svg { display: block; position: relative; width: 100%; height: 100%; touch-action: none; user-select: none; cursor: default; }
+.kg-raster { display: none; position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.kg-raster[data-ready] { display: block; }
+.kg-svg[data-raster] .kg-edge, .kg-svg[data-raster] .kg-node-dot { display: none; }
+.kg-svg[data-raster] .kg-node-hit { fill: none; pointer-events: none; }
+.kg-svg[data-raster] .kg-node text, .kg-svg[data-raster] .kg-hover-label { display: none; }
+.kg-svg[data-panning] .kg-node text { display: none; }
+.kg-svg[data-camera-moving] .kg-node text, .kg-svg[data-camera-moving] .kg-hover-label { display: none; }
+.kg-svg[data-camera-moving] .kg-node-hit { pointer-events: none; }
+.kg-svg[data-panning] { cursor: grabbing; }
+.kg-edge { stroke: var(--kg-line); stroke-width: .55; vector-effect: non-scaling-stroke; stroke-opacity: var(--kg-edge-opacity, .22); cursor: pointer; }
+.kg-edge-reference, .kg-edge-shared-file { stroke-dasharray: none; }
+.kg-edge:is(:hover,:focus-visible), .kg-edge[data-highlight] { stroke: var(--kg-accent); stroke-width: 1; outline: none; }
+.kg-marks[data-focus] .kg-edge { stroke-opacity: .035; }
+.kg-marks[data-focus] .kg-edge[data-highlight] { stroke-opacity: .85; }
+.kg-marks[data-focus] .kg-node { opacity: .18; }
+.kg-marks[data-focus] .kg-node[data-neighbor] { opacity: 1; }
+.kg-svg[data-panning] .kg-hover-label { display: none; }
+.kg-node { cursor: pointer; outline: none; }
+.kg-node-dot { fill: var(--kg-node); stroke: none; opacity: .8; }
+.kg-node-hit { fill: transparent; }
+.kg-node[data-muted] { opacity: .18; }
+.kg-node:is(:hover,:focus-visible,[data-selected]) .kg-node-dot { fill: var(--kg-accent); opacity: 1; stroke: none; }
+.kg-node:focus-visible .kg-node-hit { stroke: var(--kg-accent); stroke-width: .7; }
+.kg-node text, .kg-hover-label { font: 11px/1.4 var(--dsw-font-family, sans-serif); fill: var(--kg-text); paint-order: stroke; stroke: var(--kg-bg); stroke-width: 2px; stroke-linejoin: round; pointer-events: none; }
+.kg-node text { display: none; }
+.kg-marks[data-labels] .kg-node text { display: inline; }
+/* Canvas owns density-controlled text; legacy SVG flags must never expose a second label layer. */
+.kg-svg[data-raster] .kg-marks .kg-node text, .kg-svg[data-raster] .kg-marks .kg-hover-label { display: none; }
+.kg-filter { position: absolute; z-index: 3; top: 18px; right: 18px; width: 280px; max-height: calc(100% - 70px); overflow: auto; border: 1px solid var(--kg-panel-border); border-radius: 10px; background: var(--kg-panel); box-shadow: 0 4px 14px #0002; }
+.kg-filter[hidden] { display: none; }
+.kg-filter-actions { display: flex; align-items: center; padding: 6px 10px; gap: 2px; }
+.kg-filter-actions > span { flex: 1; padding-left: 4px; font-size: 12px; color: var(--kg-muted); }
+.kg-filter details { border-top: 1px solid var(--kg-panel-border); font-size: 13px; }
+.kg-filter summary { padding: 14px 16px; cursor: pointer; color: var(--kg-text); }
+.kg-filter details > div { display: flex; flex-direction: column; gap: 14px; padding: 0 16px 16px; }
+.kg-filter label { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 12px; color: var(--kg-muted); }
+.kg-filter .dt-input { width: 100%; background: transparent; }
+.kg-filter select { max-width: 100%; padding: 5px 7px; border: 1px solid var(--kg-panel-border); border-radius: 5px; color: var(--kg-text); background: var(--kg-bg); font: inherit; }
+.kg-filter input[type=range] { width: 100%; accent-color: var(--kg-accent); }
+.kg-filter input[type=checkbox] { accent-color: var(--kg-accent); }
+.kg-scope { font-size: 11px; color: var(--kg-muted); line-height: 1.7; }
+.kg-settings-toggle { position: absolute; top: 14px; right: 16px; z-index: 3; color: var(--kg-muted); }
+.kg-empty { position: absolute; inset: 30% 20%; display: flex; align-items: center; justify-content: center; flex-direction: column; text-align: center; pointer-events: none; }
+.kg-empty > span { font-size: 40px; color: var(--kg-muted); margin-bottom: 12px; }
+.kg-empty strong { font-size: 14px; font-weight: 400; }
+.kg-empty p { max-width: 340px; font-size: 12px; line-height: 1.8; color: var(--kg-muted); }
+.kg-inspector { position: absolute; z-index: 2; top: 48px; left: 18px; max-height: calc(100% - 105px); width: min(290px, 60%); padding: 16px; overflow-y: auto; border: 0; border-radius: 8px; background: var(--kg-panel); box-shadow: 0 4px 18px #0002; }
+.kg-inspector-title { display: flex; align-items: start; gap: 8px; }
+.kg-inspector-title strong { flex: 1; min-width: 0; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; font-weight: 500; }
+.kg-inspector p, .kg-inspector summary { font-size: 12px; line-height: 1.7; color: var(--kg-muted); }
+.kg-inspector summary { cursor: pointer; }
+.kg-inspector h3 { margin: 18px 0 8px; font-size: 12px; font-weight: 500; }
+.kg-node-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-block: 12px; }
+.kg-node-actions a { font-size: 12px; color: var(--kg-accent); }
+.kg-evidence { padding-block: 12px; }
+.kg-evidence + .kg-evidence { border-top: 1px solid var(--kg-panel-border); }
+.kg-evidence button { padding: 0; border: 0; background: transparent; font: inherit; font-size: 12px; color: var(--kg-text); text-align: start; cursor: pointer; }
+.kg-evidence button:hover { color: var(--kg-accent); }
+.kg-evidence small { display: block; margin-top: 5px; font-size: 11px; color: var(--kg-accent); }
+.kg-evidence p { margin-bottom: 0; }
+.kg-legend { position: absolute; left: 20px; bottom: 16px; font-size: 11px; color: var(--kg-muted); opacity: .65; pointer-events: none; }
+.kg-zoom { position: absolute; right: 16px; bottom: 12px; display: flex; gap: 2px; border: 0; background: transparent; }
+.kg-zoom .dt-btn { color: var(--kg-muted); }
+@media (max-width: 640px) { .kg-filter { right: 12px; width: 225px; } .kg-inspector { top: 48px; left: 12px; width: 60%; } .kg-canvas-title { left: 16px; } }

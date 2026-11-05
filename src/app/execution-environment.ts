@@ -24,11 +24,12 @@ export function declaredVariables(sources: SourceRegistry, settings?: Settings):
     ...sources.declarations().map(({ kind, variables }) => ({ owner: kind, enabled: on.has(kind), variables }))]
 }
 
-export function environmentOf(input: { deployment: Deployment; sources: SourceRegistry; settings: Settings; ticket?: { id: string; name: string; directory: string }; trigger?: Trigger }): Variable[] {
+export function environmentOf(input: { deployment?: Deployment; sources: SourceRegistry; settings: Settings; ticket?: { id: string; name: string; directory: string }; trigger?: Trigger }): Variable[] {
   const { deployment, sources, settings, ticket, trigger } = input
   const executor: Record<string, string> = { DSH_SUPERAGENT_BLOCKED_COMMANDS: settings.executor.blockedCommands.join(' '), ...ticket ? { DSH_SUPERAGENT_DIR: ticket.directory, DSH_SUPERAGENT_NAME: ticket.name, DSH_SUPERAGENT_TICKET: ticket.id } : {} }
   const result: Variable[] = EXECUTOR_VARIABLES.filter(spec => !spec.ticket || ticket).map(spec => ({ key: spec.key, value: executor[spec.key] ?? '', description: spec.description, owner: 'executor' }))
   for (const { kind, environment, config } of sources.environments(settings)) {
+    if (!deployment) continue
     const values = environment.values({ deployment, config, ...trigger ? { trigger } : {} })
     for (const spec of environment.variables) result.push({ key: spec.key, value: values[spec.key] ?? '', description: spec.description, owner: kind.kind })
   }
@@ -36,7 +37,7 @@ export function environmentOf(input: { deployment: Deployment; sources: SourceRe
 }
 
 /** Combines a ticket's fixed directory, name, and origin trigger with the deployment's current settings. */
-export function ticketEnvironment(input: { deployment: Deployment; sources: SourceRegistry; settings: Settings; ticket: Ticket; trigger?: Trigger }) {
+export function ticketEnvironment(input: { deployment?: Deployment; sources: SourceRegistry; settings: Settings; ticket: Ticket; trigger?: Trigger }) {
   const { ticket, trigger, ...rest } = input
   const values = { id: ticket.id, name: ticket.execution?.name ?? '', directory: ticket.execution?.directory ?? '' }
   return environmentOf({ ...rest, ticket: values, ...trigger ? { trigger } : {} })

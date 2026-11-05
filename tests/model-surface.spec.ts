@@ -22,7 +22,7 @@ import { IM_WORDS, NOTE_WORDS, checkedImText } from '../src/infra/text.ts'
 import { SettingsSchema } from '../src/policy.ts'
 import { feishuKind, feishuTrigger } from '../src/sources/feishu.ts'
 import { githubKind } from '../src/sources/github.ts'
-import { testMachine } from './fixtures/deployment.ts'
+import { workerCommandKey, testMachine } from './fixtures/deployment.ts'
 
 type Role = 'orchestrator' | 'worker'
 interface Surface { where: string; owner: string; role: Role | 'both'; text: string }
@@ -69,8 +69,8 @@ const words = (count: number) => Array.from({ length: count }, () => 'word').joi
 /** Start a configured Runtime on a fake DSH host (as in tests/runtime.spec.ts) that records registered tools, prompts, skills, and delivered messages per session. */
 async function start() {
   const directory = mkdtempSync(join(tmpdir(), 'model-surface-'))
-  const AGENT = join(directory, 'agent-gh'), BOT = join(directory, 'lark-bot')
-  for (const cli of [AGENT, BOT]) writeFileSync(cli, '#!/bin/sh\n', { mode: 0o755 })
+  const AGENT = join(directory, 'agent-gh.exe'), BOT = join(directory, 'lark-bot.exe')
+  for (const cli of [AGENT, BOT]) writeFileSync(cli, '') // Account probes are supplied by the subprocess fixture.
   const repository = { default_branch: 'master', permissions: { push: true } }
   vi.spyOn(Commands.prototype, 'gh').mockImplementation(async args => args[1] === 'user' ? { login: 'agent-bot' } : repository)
   vi.spyOn(Commands.prototype, 'lark').mockResolvedValue({ users: [{ member_id: MEMBER, name: 'Alice' }], has_more: false })
@@ -84,15 +84,14 @@ async function start() {
     [`${BOT} auth status`]: JSON.stringify({ appId: 'cli_bot', brand: 'feishu', identities: { bot: { status: 'ready' } } }),
     [`${BOT} config strict-mode`]: 'strict-mode: bot (source: profile)',
     [`${BOT} api GET /open-apis/bot/v3/info --as bot --format ndjson`]: '{"bot":{"open_id":"ou_bot"},"code":0,"msg":"ok"}',
-    ['git config -z --show-origin --get-all credential.https://github.com.helper']: `file:${workerGitConfig(directory)}\0${credentialHelper(AGENT)}\0`,
+    ['git config -z --show-origin --get-all credential.https://github.com.helper']: `file:${workerGitConfig(directory)}\0${credentialHelper(join(directory, 'worker-bin', 'gh.cjs'))}\0`,
     ['git config -z --show-scope --get-regexp ^(credential\\..*|http\\..*extraheader)$']:
-      `global\0credential.helper\n\0global\0credential.https://github.com.helper\n${credentialHelper(AGENT)}\0`,
+      `global\0credential.helper\n\0global\0credential.https://github.com.helper\n${credentialHelper(join(directory, 'worker-bin', 'gh.cjs'))}\0`,
   }
   const reader = (text: string) => ({ readFrom: () => ({ text, nextOffset: text.length, lossy: false }) })
   const subprocess = { spawn: (spec: { argv: readonly string[] }) => {
-    const argv = [...spec.argv]
-    while (argv[0] === 'env' || /^[A-Z_]+=/.test(argv[0] ?? '')) argv.shift()
-    const collected = { stdout: reader(answers[argv.join(' ')] ?? ''), stderr: reader('') }
+    const argv = spec.argv
+    const collected = { stdout: reader(answers[workerCommandKey(argv)] ?? ''), stderr: reader('') }
     return { done: Promise.resolve({ exitCode: 0, signal: null }), collected }
   } }
   const agents = new Map<string, { status: string }>()

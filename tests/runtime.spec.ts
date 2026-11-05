@@ -3,16 +3,18 @@ import { bindScopeParent } from '@deepseek-ai/dsh-scope'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { DatabaseSync } from 'node:sqlite'
-import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest'
+import { delimiter, join } from 'node:path'
+import { execFileSync } from 'node:child_process'
+import { afterEach, beforeEach, describe, expect, expectTypeOf, it, onTestFinished, vi } from 'vitest'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { Runtime } from '../src/app/runtime.ts'
 import { jobRegistry } from './fixtures/host.ts'
 import { evalsHealth } from '../src/app/views/overview.ts'
+import { powershell } from '../src/infra/native-command.ts'
 import { mandateInstructions } from '../src/executor/dsh.ts'
 import { masterPrompt } from '../src/app/context.ts'
-import { reference, testMachine } from './fixtures/deployment.ts'
+import { isPrepare, workerCommandKey, reference, testMachine } from './fixtures/deployment.ts'
 import type { Machine } from '../src/deployment.ts'
 import { SCHEMA_VERSION, Store } from '../src/app/store.ts'
 import { TextCache } from '../src/app/cache.ts'
@@ -80,16 +82,15 @@ let jobs: ReturnType<typeof jobRegistry>
 /** What worker commands of the startup checks print, by argv; an Error makes the command fail with its message. */
 let answers: Record<string, string | Error>
 /** Stand-in CLIs on disk, since setup finds executables before it runs them: the agent's, the merge account's and the Feishu bot's. */
-const AGENT = () => join(directory, 'agent-gh')
-const OTHER = () => join(directory, 'other-gh')
-const BOT = () => join(directory, 'lark-bot')
+const AGENT = () => join(directory, 'agent-gh.exe')
+const OTHER = () => join(directory, 'other-gh.exe')
+const BOT = () => join(directory, 'lark-bot.exe')
 const HELPERS = 'git config -z --show-origin --get-all credential.https://github.com.helper'
+const shimFiles = (names: string[]) => names.flatMap(name => ['cjs', 'cmd', 'ps1'].map(extension => `${name}.${extension}`)).sort()
 const SCOPED = 'git config -z --show-scope --get-regexp ^(credential\\..*|http\\..*extraheader)$'
 const subprocess = { spawn: vi.fn((spec: { argv: readonly string[] }) => {
-  // Strip leading `env` and `KEY=VALUE` arguments before looking up the command response.
-  const argv = [...spec.argv]
-  while (argv[0] === 'env' || /^[A-Z_]+=/.test(argv[0] ?? '')) argv.shift()
-  const answer = answers[argv.join(' ')] ?? ''
+  const argv = spec.argv
+  const answer = answers[workerCommandKey(argv)] ?? ''
   const reader = (text: string) => ({ readFrom: () => ({ text, nextOffset: text.length, lossy: false }) })
   return { done: Promise.resolve({ exitCode: answer instanceof Error ? 1 : 0, signal: null }), collected: { stdout: reader(answer instanceof Error ? '' : answer), stderr: reader(answer instanceof Error ? answer.message : '') } }
 }) }
@@ -149,8 +150,8 @@ beforeEach(async () => {
     [`${BOT()} auth status`]: JSON.stringify({ appId: 'cli_bot', brand: 'feishu', identities: { bot: { status: 'ready' } } }),
     [`${BOT()} config strict-mode`]: 'strict-mode: bot (source: profile)',
     [`${BOT()} api GET /open-apis/bot/v3/info --as bot --format ndjson`]: '{"bot":{"open_id":"ou_bot"},"code":0,"msg":"ok"}',
-    [HELPERS]: `file:${workerGitConfig(directory)}\0${credentialHelper(AGENT())}\0`,
-    [SCOPED]: `global\0credential.helper\n\0global\0credential.https://github.com.helper\n${credentialHelper(AGENT())}\0`,
+    [HELPERS]: `file:${workerGitConfig(directory)}\0${credentialHelper(join(directory, 'worker-bin', 'gh.cjs'))}\0`,
+    [SCOPED]: `global\0credential.helper\n\0global\0credential.https://github.com.helper\n${credentialHelper(join(directory, 'worker-bin', 'gh.cjs'))}\0`,
   }
   const ctx = new Context()
   agents = new Map()
@@ -205,7 +206,7 @@ beforeEach(async () => {
   jobs = jobRegistry()
   services = { agents, llm: { resolveCallConfig: vi.fn(async value => value) }, sessionController: controller, sessionPersistence: { flush: vi.fn(async () => {}), open: vi.fn(async () => ({ read: async () => ({ events: [] }), [Symbol.asyncDispose]: async () => {} })) }, workspaceRegistry: { create: async (cwd: string) => ({ id: cwd }) }, permissionPresets: { set: () => {} }, subprocess, webServer: { host: '127.0.0.1', port: 3082, register: (route: { handler: HttpHandler }) => { http = route.handler; return () => {} } }, jobs: jobs.service }
   for (const [name, service] of Object.entries(services)) ctx.reflect.provide(name, service)
-  for (const cli of [AGENT(), OTHER(), BOT()]) writeFileSync(cli, '#!/bin/sh\n', { mode: 0o755 })
+  for (const cli of [AGENT(), OTHER(), BOT()]) writeFileSync(cli, '') // Account probes are supplied by the subprocess fixture.
   const store = new Store(join(directory, 'orchestrator.sqlite')); seed(store); store.close()
   runtime = new Runtime(ctx, testMachine({ stateDir: directory }), restarts)
   await runtime.ready
@@ -850,10 +851,9 @@ it('reports each setup problem where the operator fixes it, and checks the agent
   await needs('github', 'repositoryReadOnly', { account: 'agent-bot', repository: 'acme/widgets' })
   answers[`${AGENT()} api repos/acme/widgets --jq {name: .full_name, push: .permissions.push}`] = '{"name":"acme/widgets","push":true}\n'
   // The agent CLI runs in the workers' environment: without the shims on PATH.
-  const check = subprocess.spawn.mock.calls.map(([spec]) => spec.argv).find(argv => argv.includes(AGENT()))!
-  expect(check[0]).toBe('env')
-  expect(check[1]!.startsWith('PATH=')).toBe(true)
-  expect(check[1]!.slice('PATH='.length).split(':')).not.toContain(join(directory, 'worker-bin'))
+  const check = subprocess.spawn.mock.calls.map(([spec]) => spec as { argv: readonly string[]; env: Record<string, string> }).find(spec => spec.argv[0] === AGENT())!
+  expect(check.argv[0]).toBe(AGENT())
+  expect(check.env.PATH!.split(delimiter)).not.toContain(join(directory, 'worker-bin'))
   const valid = { ...answers }
   // git older than 2.32 ignores GIT_CONFIG_GLOBAL and reads the operator's configuration.
   answers = { ...valid, [HELPERS]: 'file:/home/me/.gitconfig\0!gh auth git-credential\0' }
@@ -972,19 +972,20 @@ it('runs setup again while the Feishu bot check failed, and restores the process
 
 it('writes worker shims and the agent environment from the configuration only, and restores the environment on stop', async () => {
   const bin = join(directory, 'worker-bin')
-  expect(readdirSync(bin).sort()).toEqual(['gh', 'lark-cli'])
-  expect(readFileSync(join(bin, 'lark-cli'), 'utf8')).toContain(`exec '${BOT()}'`)
+  expect(readdirSync(bin).sort()).toEqual(shimFiles(['gh', 'lark-cli']))
+  expect(readFileSync(join(bin, 'lark-cli.cjs'), 'utf8')).toContain(JSON.stringify(BOT()))
   runtime.store.saveSettings({ ...runtime.store.settings(), executor: { ...runtime.store.settings().executor, blockedCommands: ['personal-gh'] } })
   const next = await restart({}, { feishu: null })
   await next.ready
-  expect(readdirSync(bin).sort()).toEqual(['gh', 'lark-cli', 'personal-gh'])
-  expect(readFileSync(join(bin, 'personal-gh'), 'utf8')).toContain('personal-gh is blocked in this installation; use gh, which acts as agent-bot.')
-  expect(readFileSync(join(bin, 'lark-cli'), 'utf8')).toContain('lark-cli is unavailable: this installation has no Feishu bot.')
-  expect(readFileSync(join(bin, 'gh'), 'utf8')).toContain(`exec '${AGENT()}'`)
-  expect(readFileSync(workerGitConfig(directory), 'utf8')).toContain(`[credential "https://github.com"]\n\thelper = "${credentialHelper(AGENT())}"`)
+  expect(readdirSync(bin).sort()).toEqual(shimFiles(['gh', 'lark-cli', 'personal-gh']))
+  expect(readFileSync(join(bin, 'personal-gh.cjs'), 'utf8')).toContain('personal-gh is blocked in this installation; use gh, which acts as agent-bot.')
+  expect(readFileSync(join(bin, 'lark-cli.cjs'), 'utf8')).toContain('lark-cli is unavailable: this installation has no Feishu bot.')
+  expect(readFileSync(join(bin, 'gh.cjs'), 'utf8')).toContain(JSON.stringify(AGENT()))
+  expect(execFileSync('git', ['config', '--file', workerGitConfig(directory), '--get', 'credential.https://github.com.helper'],
+    { encoding: 'utf8', windowsHide: true }).trim()).toBe(credentialHelper(join(directory, 'worker-bin', 'gh.cjs')))
   expect(process.env).toMatchObject({ GIT_CONFIG_GLOBAL: workerGitConfig(directory), GIT_CONFIG_NOSYSTEM: '1' })
   expect(process.env.GIT_AUTHOR_NAME).toBeUndefined()
-  expect(process.env.PATH?.split(':')[0]).toBe(bin)
+  expect(process.env.PATH?.split(delimiter)[0]).toBe(bin)
   await next.stop()
   expect(process.env.GIT_CONFIG_GLOBAL).toBeUndefined()
   expect(process.env.PATH?.split(':')).not.toContain(bin)
@@ -1004,9 +1005,9 @@ it('rewrites the blocked-command shims when the Executor settings change them, w
   const bin = join(directory, 'worker-bin')
   const save = (blockedCommands: string[]) => runtime.settings.save('executor', { ...runtime.store.settings().executor, blockedCommands }, runtime.store.blockRevision('executor'), 'panel')
   expect(await save(['personal-gh'])).toMatchObject({ saved: true, restarting: false })
-  expect(readdirSync(bin).sort()).toEqual(['gh', 'lark-cli', 'personal-gh'])
+  expect(readdirSync(bin).sort()).toEqual(shimFiles(['gh', 'lark-cli', 'personal-gh']))
   await save([])
-  expect(readdirSync(bin).sort()).toEqual(['gh', 'lark-cli'])
+  expect(readdirSync(bin).sort()).toEqual(shimFiles(['gh', 'lark-cli']))
   // The commands workers need cannot be blocked.
   await expect(save(['gh'])).rejects.toThrow()
   expect(restarts).not.toHaveBeenCalled()
@@ -1078,22 +1079,54 @@ it('leaves auto-merge to the delivery requirements, with the agent\'s own gh and
 
 it('runs the prepare command once for a new ticket, under the execution root with the ticket\'s environment, and fails the ticket with its output', async () => {
   const prepare = (command: string) => runtime.store.saveSettings({ ...runtime.store.settings(), executor: { ...runtime.store.settings().executor, prepare: command } })
-  const runs = () => subprocess.spawn.mock.calls.map(([spec]) => spec as { argv: string[]; cwd: string; env?: Record<string, string> }).filter(spec => spec.argv[0] === 'sh')
+  const runs = () => subprocess.spawn.mock.calls.map(([spec]) => spec as { argv: string[]; cwd: string; env?: Record<string, string> }).filter(spec => isPrepare(spec.argv))
   prepare('git -C /srv/widgets worktree add "$DSH_SUPERAGENT_DIR" -b "agent/$DSH_SUPERAGENT_NAME"')
   const { ticket } = await acceptedTicket()
-  expect(runs()).toEqual([expect.objectContaining({ argv: ['sh', '-c', 'git -C /srv/widgets worktree add "$DSH_SUPERAGENT_DIR" -b "agent/$DSH_SUPERAGENT_NAME"'], cwd: join(directory, 'work'),
+  expect(runs()).toEqual([expect.objectContaining({ argv: process.platform === 'win32'
+      ? [powershell(), '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', expect.stringContaining('git -C /srv/widgets worktree add "$DSH_SUPERAGENT_DIR" -b "agent/$DSH_SUPERAGENT_NAME"')]
+      : ['sh', '-c', 'git -C /srv/widgets worktree add "$DSH_SUPERAGENT_DIR" -b "agent/$DSH_SUPERAGENT_NAME"'], cwd: join(directory, 'work'),
     env: expect.objectContaining({ DSH_SUPERAGENT_DIR: ticket.execution!.directory, DSH_SUPERAGENT_NAME: ticket.execution!.name, DSH_SUPERAGENT_GITHUB_REPOSITORY: 'acme/widgets', DSH_SUPERAGENT_FEISHU_CHAT: CHAT }) })])
   // A retry reuses the prepared directory.
   await runTool(`worker-${ticket.id}`, 'orchestrator_report', { state: 'failed', summary: 'offline' })
   await runtime.engine.retryTicket(ticket.id)
   await runtime.idle()
   expect(runs()).toHaveLength(1)
-  answers['sh -c exit 3'] = new Error('fatal: no such clone')
+  answers['prepare exit 3'] = new Error('fatal: no such clone')
   prepare('exit 3')
   const failed = await acceptedTicket(feishu('9', '@bot 修一下标题'))
   await runtime.idle()
   expect(runtime.store.tickets.get(failed.ticket.id)!.assignments.at(-1)).toMatchObject({ report: expect.objectContaining({ state: 'failed', summary: expect.stringContaining('The prepare command failed: fatal: no such clone') }) })
   expect(waitsForPerson(runtime.store.tickets.get(failed.ticket.id)!)).toBe(true)
+})
+
+it('executes a native PowerShell prepare with ticket variables and propagates its native command failure', async () => {
+  const original = subprocess.spawn.getMockImplementation()!
+  onTestFinished(() => { subprocess.spawn.mockImplementation(original) })
+  let nativeRuns = 0
+  const nativeExits: number[] = []
+  subprocess.spawn.mockImplementation(spec => {
+    if (spec.argv[0] !== powershell()) return original(spec)
+    nativeRuns++
+    const options = spec as unknown as { cwd: string; env: Record<string, string> }
+    let stdout = '', stderr = '', exitCode = 0
+    try { stdout = execFileSync(spec.argv[0], [...spec.argv.slice(1)], { cwd: options.cwd, env: { ...process.env, ...options.env }, encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }) }
+    catch (error) { const failure = error as { status: number; stdout?: string; stderr?: string }; exitCode = failure.status; stdout = String(failure.stdout ?? ''); stderr = String(failure.stderr ?? '') }
+    nativeExits.push(exitCode)
+    const reader = (text: string) => ({ readFrom: () => ({ text, nextOffset: text.length, lossy: false }) })
+    return { done: Promise.resolve({ exitCode, signal: null }), collected: { stdout: reader(stdout), stderr: reader(stderr) } }
+  })
+  const prepare = (command: string) => runtime.store.saveSettings({ ...runtime.store.settings(), executor: { ...runtime.store.settings().executor, prepare: command } })
+  prepare("Set-Content -LiteralPath ($env:DSH_SUPERAGENT_DIR + '.native') -Value $env:DSH_SUPERAGENT_NAME")
+  const { ticket } = await acceptedTicket()
+  expect(nativeRuns).toBe(1)
+  expect(readFileSync(ticket.execution!.directory + '.native', 'utf8').trim()).toBe(ticket.execution!.name)
+  const failedScript = join(directory, 'prepare failure with spaces.cjs')
+  writeFileSync(failedScript, 'process.stderr.write("native prepare failed"); process.exit(7)')
+  prepare(`& '${process.execPath.replaceAll("'", "''")}' '${failedScript.replaceAll("'", "''")}'`)
+  const failed = await acceptedTicket(feishu('19', '@bot native failure'))
+  expect(nativeRuns).toBe(2)
+  expect(nativeExits).toEqual([0, 7])
+  expect(runtime.store.tickets.get(failed.ticket.id)!.assignments.at(-1)!.report).toMatchObject({ state: 'failed', summary: expect.stringContaining('native prepare failed') })
 })
 
 it('counts a ticket whose directory the host prepared before prepare commands existed as prepared', async () => {
@@ -1106,7 +1139,7 @@ it('counts a ticket whose directory the host prepared before prepare commands ex
   subprocess.spawn.mockClear()
   await runtime.engine.retryTicket(ticket.id)
   await runtime.idle()
-  expect(subprocess.spawn.mock.calls.some(([spec]) => spec.argv[0] === 'sh')).toBe(false)
+  expect(subprocess.spawn.mock.calls.some(([spec]) => isPrepare(spec.argv))).toBe(false)
   expect(runtime.store.tickets.get(ticket.id)!.assignments.at(-1)!.state).toBe('running')
 })
 
@@ -1491,6 +1524,13 @@ it('fails a ticket at once on a worker error that is not passing, and relays it'
   expect(relays(runtime.masterId).at(-1)).toMatchObject({ kind: 'worker_report', ticket: { ticket_id: ticket.id }, state: 'failed' })
 })
 
+it('applies the original nonblocking router rule to native PowerShell', () => {
+  const guard = guards.get(runtime.masterId)!
+  expect(guard({ name: 'pwsh', arguments: { command: 'Start-Sleep -Seconds 60' } })).toMatch(/^Reports/)
+  expect(guard({ name: 'pwsh', arguments: { command: 'Get-Item .', timeoutMs: 120000 } })).toMatch(/^Reports/)
+  expect(guard({ name: 'pwsh', arguments: { command: 'Get-Item .', timeoutMs: 1000 } })).toBeUndefined()
+})
+
 it('refuses the main Session a bash command that runs sleep and a long job wait, as reports arrive by themselves, and no worker', async () => {
   const bash = (command: string) => ({ name: 'bash', arguments: { command, description: 'x' } })
   const main = guards.get(runtime.masterId)!
@@ -1597,16 +1637,16 @@ it('runs a launch that fails for a passing reason again on the launch backoff th
     controller.resolveAgent.mockImplementation(original)
   }
   // A prepare command whose output names a passing failure is not run again on its own.
-  const runs = () => subprocess.spawn.mock.calls.filter(([spec]) => (spec as { argv: string[] }).argv[0] === 'sh').length
+  const runs = () => subprocess.spawn.mock.calls.filter(([spec]) => isPrepare((spec as { argv: string[] }).argv)).length
   runtime.store.saveSettings({ ...runtime.store.settings(), executor: { ...runtime.store.settings().executor, prepare: 'exit 3' } })
-  answers['sh -c exit 3'] = new Error('fatal: unable to access: The requested URL returned error: 503')
+  answers['prepare exit 3'] = new Error('fatal: unable to access: The requested URL returned error: 503')
   const before = runs()
   const prepared = await acceptedTicket(feishu('40', '@bot 修 prepare', { root_id: undefined }))
   await runtime.idle()
   expect(runtime.store.tickets.get(prepared.ticket.id)!.assignments.at(-1)!.report).toMatchObject({ state: 'failed', summary: expect.stringContaining('503') })
   expect(runs()).toBe(before + 1)
   // A retry runs the prepare command again, for the directory it left empty was removed; resuming relaunches no failed launch.
-  delete answers['sh -c exit 3']
+  delete answers['prepare exit 3']
   runtime.executor.resume()
   await runtime.idle()
   expect(runs()).toBe(before + 1)
@@ -1618,12 +1658,12 @@ it('runs a launch that fails for a passing reason again on the launch backoff th
 
 it('launches a queued Assignment once when the host resumes, and gives a failed launch\'s slot back', async () => {
   runtime.store.saveSettings({ ...runtime.store.settings(), executor: { ...runtime.store.settings().executor, maxWorkers: 1, prepare: 'exit 3' } })
-  answers['sh -c exit 3'] = new Error('fatal: no such clone')
+  answers['prepare exit 3'] = new Error('fatal: no such clone')
   const failed = await acceptedTicket(feishu('50', '@bot 修 一', { root_id: undefined }))
   await runtime.idle()
   expect(runtime.store.tickets.get(failed.ticket.id)!.assignments.at(-1)!.report).toMatchObject({ state: 'failed' })
   // The failed launch holds no slot: the next ticket launches in the only one.
-  delete answers['sh -c exit 3']
+  delete answers['prepare exit 3']
   const next = await acceptedTicket(feishu('51', '@bot 修 二', { root_id: undefined }))
   await runtime.idle()
   expect(runtime.store.tickets.get(next.ticket.id)!.assignments.at(-1)).toMatchObject({ state: 'running' })

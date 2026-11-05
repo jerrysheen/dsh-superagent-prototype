@@ -4,12 +4,15 @@ import { z } from 'zod'
 import { record } from '../kv.ts'
 import type { Store } from './store.ts'
 import { RoutingDecisionSchema, routingInputHash, type RoutingDecision, type SessionRouting } from './session-router.ts'
+import { intentBoundary } from './routing-intent.ts'
 
 const Id = z.string().trim().min(1).max(200)
 export const SessionCardSchema = z.object({
   uid: Id, provider: Id,
   surface: z.enum(['chatgpt', 'codex', 'other']), mode: z.enum(['chat', 'work', 'unknown']),
   projectId: z.string().max(200).nullable(), projectName: z.string().max(200).nullable(),
+  /** Explicitly supplied absolute local directory; validate before using, never infer from project ID/name. */
+  workspacePath: z.string().trim().min(3).max(500).optional(),
   threadId: z.string().max(200).nullable(), title: z.string().trim().min(1).max(500),
   summary: z.string().max(3000).default(''),
   scope: z.enum(['local', 'cloud', 'unknown']).default('unknown'),
@@ -73,13 +76,19 @@ export class SessionHub {
     const state = this.state(), prior = state.tasks.find(task => task.request.requestId === request.requestId)
     if (prior) return this.submit(request)
     const cards = this.candidates(state.sessions, request)
-    if (request.target.uid || (cards.length === 1 && (request.target.projectId || request.target.mode))) return this.submit(request)
+    const boundary = intentBoundary(request.instruction, cards.flatMap(card => card.projectName ? [card.projectName] : []))
+    if (boundary && (boundary.intent === 'create_new' || !request.target.uid)) {
+      return this.save(request, { action: 'needs_confirmation', intent: boundary.intent, targetSessionUid: null,
+        model: null, reason: boundary.reason, consideredUids: cards.map(card => card.uid),
+        inputHash: routingInputHash({ request, cards, tasks: state.tasks }), decidedAt: new Date().toISOString() })
+    }
+    if (request.target.uid) return this.submit(request)
     if (!this.router) return this.save(request, { action: 'needs_confirmation', targetSessionUid: null, model: null,
       consideredUids: cards.map(card => card.uid), inputHash: '', decidedAt: new Date().toISOString(), reason: '智能路由尚未配置，请明确指定目标会话。' })
     const decision = RoutingDecisionSchema.parse(await this.router.recommend({ request, cards, tasks: state.tasks }))
     const current = this.state(), now = { request, cards: this.candidates(current.sessions, request), tasks: current.tasks }
     if (decision.inputHash !== routingInputHash(now)) {
-      return this.save(request, { ...decision, action: 'needs_confirmation', targetSessionUid: null,
+      return this.save(request, { ...decision, intent: 'needs_confirmation', action: 'needs_confirmation', targetSessionUid: null,
         reason: '推荐期间会话资料或任务状态发生变化，请重新确认目标。', errorCode: 'ROUTING_CONTEXT_CHANGED' })
     }
     return this.save(request, decision)
@@ -108,7 +117,12 @@ export class SessionHub {
         return prior
       }
       const matches = this.candidates(state.sessions, request)
-      const proposed = routing ? routing.action === 'selected' ? matches.find(card => card.uid === routing.targetSessionUid) : undefined
+      const boundary = intentBoundary(request.instruction, matches.flatMap(card => card.projectName ? [card.projectName] : []))
+      if (boundary?.intent === 'create_new') routing = { action: 'needs_confirmation', intent: 'create_new', targetSessionUid: null,
+        model: routing?.model ?? null, reason: boundary.reason, consideredUids: matches.map(card => card.uid),
+        inputHash: routingInputHash({ request, cards: matches, tasks: state.tasks }), decidedAt: new Date().toISOString() }
+      const decision = routing
+      const proposed = decision ? decision.action === 'selected' ? matches.find(card => card.uid === decision.targetSessionUid) : undefined
         : matches.length === 1 ? matches[0] : undefined
       const target = proposed ?? null
       // An API-addressed native thread selected explicitly does not depend on an inferred Chat/Work label.

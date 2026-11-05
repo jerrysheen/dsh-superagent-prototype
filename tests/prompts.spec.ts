@@ -20,6 +20,14 @@ function withStore(body: (store: Store, dir: string) => void): void {
   const dir = mkdtempSync(join(tmpdir(), 'prompts-')); const store = new Store(join(dir, 'db'))
   try { body(store, dir) } finally { store.close(); rmSync(dir, { recursive: true, force: true }) }
 }
+it('previews the actual local driver prompt without repository delivery or GitHub skills', () => withStore(store => {
+  const prompts = new Prompts(store, () => 100000, () => [], () => false, true)
+  const preview = prompts.preview(defaultPrompts())
+  expect(preview.worker).toBe(prompts.compose(defaultPrompts(), 'worker'))
+  expect(preview.worker).toContain('Local execution adapter')
+  expect(preview.worker).not.toContain('## PR delivery')
+  expect(preview.skills).not.toHaveProperty('github')
+}))
 
 it('saves team sections and skills as versions that survive a restart, with history and rollback', () => {
   const dir = mkdtempSync(join(tmpdir(), 'prompt-config-'))
@@ -58,7 +66,8 @@ it('assembles every role from fixed sections around the team sections, whatever 
 })
 
 it('reads a prompt file whatever its line ends and blank lines, and names a missing or empty one', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'prompt-file-'))
+  // Keep the fixture on the package volume: Windows relative() cannot cross drive letters.
+  const dir = mkdtempSync(join(packagePath('prompts'), 'test-prompt-file-'))
   // promptFile resolves paths relative to prompts/; use a relative path to reach the temp dir.
   const name = (file: string) => relative(packagePath('prompts'), join(dir, file))
   try {

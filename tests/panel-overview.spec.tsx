@@ -6,6 +6,16 @@ import { usePanel, mount, remount, all, find, tab, click, text } from './fixture
 import { server, droppedReply, threadSummary } from './fixtures/panel-server.ts'
 
 usePanel()
+it('uses the graph as a full-page overview with the original work/status content accessible separately', async () => {
+  await mount()
+  await click('关系图谱')
+  expect(document.querySelector('main.dt-graph-page .kg-window')).not.toBeNull()
+  expect(text()).not.toContain('展开视窗')
+  expect(document.querySelector('.dt-overview-details')).toBeNull()
+  await click('工作与状态')
+  expect(document.querySelector('.kg-window')).toBeNull()
+  expect(document.querySelector('.dt-overview-details .dt-section-title')).not.toBeNull()
+})
 it('leads the overview with the pending Tickets, then problems, the last day and the Executor, each linking to its stage', async () => {
   await mount()
   expect(tab(zh['tab.overview']).getAttribute('aria-selected')).toBe('true')

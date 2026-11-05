@@ -1027,16 +1027,19 @@ it('reports GitHub as failing only after the configured number of consecutive fa
     observePulls: false, observeComments: false, observeCi: false })
 })
 describe('feishu event consumer', () => {
+  const stores = new Set<Store>()
   let dir: string
   let controller: AbortController
   let running: Promise<unknown> | undefined
   // The fake CLI is a real process, which starts slower while the whole suite runs.
   const until = { timeout: 10_000 }
-  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'feishu-consumer-')); controller = new AbortController() })
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'feishu consumer space-')); controller = new AbortController() })
   afterEach(async () => {
     controller.abort()
     await running
     vi.useRealTimers()
+    for (const store of stores) { try { store.close() } catch { /* Already closed by the test. */ } }
+    stores.clear()
     rmSync(dir, { recursive: true, force: true })
   })
   /**
@@ -1044,19 +1047,26 @@ describe('feishu event consumer', () => {
    * and `flaky` exits after its first ready. It records each run and the PID of the latest.
    */
   function cli(mode: 'never' | 'warn' | 'ready' | 'flaky' | 'events' | 'late'): string {
-    const path = join(dir, 'lark-bot')
-    writeFileSync(path, `#!/bin/sh
-  [ "$1" = event ] || { echo '{"ok":true,"data":{}}'; exit 0; }
-  n=$(cat '${dir}/runs' 2>/dev/null || echo 0); n=$((n + 1)); echo $n > '${dir}/runs'; echo $$ > '${dir}/pid'
-  case ${mode} in
-    never) exec sleep 60 ;;
-    warn) echo '[event] ready' >&2; echo 'WARN the connection was reset' >&2; exec sleep 60 ;;
-    ready) echo '[event] ready' >&2; exec sleep 60 ;;
-    flaky) echo '[event] ready' >&2; [ "$n" -gt 1 ] && exec sleep 60; exit 1 ;;
-    events) echo '[event] ready' >&2; cat '${dir}/events'; touch '${dir}/printed'; exec sleep 60 ;;
-    late) echo '[event] ready' >&2; sleep 1; cat '${dir}/events'; touch '${dir}/printed'; exec sleep 60 ;;
-  esac
-  `, { mode: 0o755 })
+    const script = join(dir, 'lark-bot.cjs')
+    writeFileSync(script, `#!/usr/bin/env node
+const { readFileSync, writeFileSync, existsSync } = require('node:fs')
+const { join } = require('node:path')
+const dir = ${JSON.stringify(dir)}
+if (process.argv[2] !== 'event') { console.log('{"ok":true,"data":{}}'); process.exit(0) }
+const counter = join(dir, 'runs')
+const n = (existsSync(counter) ? Number(readFileSync(counter, 'utf8')) : 0) + 1
+writeFileSync(counter, String(n)); writeFileSync(join(dir, 'pid'), String(process.pid))
+const mode = ${JSON.stringify(mode)}
+setInterval(() => {}, 60_000)
+const print = () => { process.stdout.write(readFileSync(join(dir, 'events'))); writeFileSync(join(dir, 'printed'), '') }
+if (mode !== 'never') console.error('[event] ready')
+if (mode === 'warn') console.error('WARN the connection was reset')
+if (mode === 'flaky' && n === 1) process.exit(1)
+if (mode === 'events') print()
+if (mode === 'late') setTimeout(print, 1000)
+`, { mode: 0o755 })
+    const path = process.platform === 'win32' ? join(dir, 'lark-bot.cmd') : script
+    if (process.platform === 'win32') writeFileSync(path, `@echo off\r\n"${process.execPath}" "${script}" %*\r\n`)
     return path
   }
   const runs = () => existsSync(join(dir, 'runs')) ? Number(readFileSync(join(dir, 'runs'), 'utf8')) : 0
@@ -1064,6 +1074,7 @@ describe('feishu event consumer', () => {
   /** The Feishu Source's context, on a fresh Store whose Feishu Source is on, with `cli` as the bot CLI. */
   function consumerSource(path: string, config: Record<string, unknown> = { chats: [] }) {
     const store = new Store(join(dir, 'db.sqlite'))
+    stores.add(store)
     store.saveSettings(SettingsSchema.parse({ sources: { feishu: { enabled: true, config } } }))
     const board = new HealthBoard()
     const sources = new SourceRegistry(() => store.settings(), board)
