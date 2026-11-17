@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync } from 'node:fs'
+import { createHash, randomUUID } from 'node:crypto'
 import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { expect, it, vi } from 'vitest'
@@ -46,6 +47,46 @@ it('admits only confirmed work through the original Engine, reports real progres
     expect(host.tools.get(host.runtime.masterId)?.has('orchestrator_settings_save')).toBe(false)
     expect(host.tools.get(host.runtime.masterId)?.has('send_cloud_question')).toBe(false)
   } finally {
+    await host.stop()
+    if (!resolve(workspace).startsWith(resolve(tmpdir()) + '\\')) throw Error('Unsafe fixture cleanup')
+    rmSync(workspace, { recursive: true, force: true })
+  }
+})
+
+it('handles the Bot confirmation and cancellation routes through the original Engine', async () => {
+  vi.stubEnv('DSH_MANAGED_WORK_CHAT_DISPATCH', '1')
+  const token = 'fixture-only-bot-bridge-token'
+  vi.stubEnv('DSH_BOT_BRIDGE_TOKEN', token)
+  const headers = { 'x-superagent-bot-token': token }
+  const workspace = mkdtempSync(join(tmpdir(), 'managed-bot-work-'))
+  const host = await startRuntime(store => store.saveSettings(SettingsSchema.parse({ paused: false,
+    sources: { github: { enabled: false }, feishu: { enabled: false }, 'local-work': { enabled: true, config: { workspaces: [{ path: workspace }] } } },
+    policy: { sources: { 'local-work': { allowed: [{ id: 'local-operator' }] } } } })), { coordinationMode: 'sessions', sessionExecution: true })
+  try {
+    const prepare = (instruction: string) => host.sessionApi('POST', 'managed-work/prepare', { mode: 'new', workspace, executor: 'dsh', instruction })
+    function action(draft: Record<string, unknown>, text: string) {
+      return { draftId: draft.id, previewHash: createHash('sha256').update(JSON.stringify([draft.id, draft.mode, draft.workspace, draft.instruction,
+        draft.targetUid ?? null, draft.executor, draft.transport, draft.permission, draft.workId])).digest('hex'),
+        confirmation: { channel: 'chat', text, messageId: randomUUID() } }
+    }
+    const first = await prepare('通过 Bot 派发一项只读检查')
+    const second = await prepare('通过 Bot 取消另一项只读检查')
+    expect(first.status).toBe(200)
+    expect(second.status).toBe(200)
+    expect(host.runtime.store.tickets.list()).toHaveLength(0)
+    const refused = await host.sessionApi('POST', 'bot/confirm-work', action(first.body, '派发'))
+    expect(refused.status).toBe(403)
+    const cancelled = await host.sessionApi('POST', 'bot/cancel-work', action(second.body, '取消'), headers)
+    expect(cancelled).toMatchObject({ status: 200, body: { state: 'cancelled' } })
+    expect(host.runtime.store.tickets.list()).toHaveLength(0)
+    const submitted = await host.sessionApi('POST', 'bot/confirm-work', action(first.body, '派发'), headers)
+    expect(submitted.status, JSON.stringify(submitted.body)).toBe(200)
+    const tickets = host.runtime.store.tickets.list()
+    expect(tickets).toHaveLength(1)
+    expect(submitted.body).toMatchObject({ state: 'submitted', instruction: first.body.instruction, receipt: { tickets: [{ ticket_id: tickets[0]!.id }] } })
+    expect(submitted.body).not.toHaveProperty('token')
+  } finally {
+    vi.unstubAllEnvs()
     await host.stop()
     if (!resolve(workspace).startsWith(resolve(tmpdir()) + '\\')) throw Error('Unsafe fixture cleanup')
     rmSync(workspace, { recursive: true, force: true })

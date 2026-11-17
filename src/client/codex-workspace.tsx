@@ -23,8 +23,8 @@ import SYNTAX from './syntax-highlight.css?raw'
 const styles = <style>{STYLES}{NATIVE}{WORKSPACE}{SYNTAX}</style>
 function ActivityBadge({ value }: { value?: SessionActivity }) {
   const stale = value?.stale || !!value && Date.now() - Date.parse(value.observedAt) > 60000
-  const state = value?.state === 'running' ? 'running' : 'idle'
-  const label = value && value.state !== 'unknown' ? state === 'running' ? '进行中' : '空闲' : '正在读取状态'
+  const state = value?.state ?? 'unknown'
+  const label = ({ running: '进行中', idle: '空闲', waiting_user: '等待你的操作', failed: '执行异常', unknown: '正在读取状态' })[state]
   const time = value ? new Date(value.observedAt).toLocaleTimeString() : ''
   const detail = time ? (stale ? '连接暂不可用，保留上次观测：' : '状态观测时间：') + time : '正在同步运行状态'
   return <span className="cw-activity" data-state={state} role="status" aria-label={label} title={label + ' · ' + detail}>
@@ -105,46 +105,26 @@ export function CodexWorkspaceSidebar({ wide, store, open, onNew }: { wide: bool
 export function CodexWorkspacePage({ store, openManagedWork }: { store: CodexWorkspaceStore; openManagedWork?(): void }) {
   const state = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot)
   useEffect(() => store.start(), [store])
-  const [question, setQuestion] = useState('')
   const [images, setImages] = useState<{ id: string; src: string; name: string }[]>([]), [uploading, setUploading] = useState(false)
   const imageInput = useRef<HTMLInputElement>(null), uploadGeneration = useRef(0)
-  const [error, setError] = useState('')
   const [preview, setPreview] = useState<PreviewTarget | null>(null)
   const content = useRef<HTMLDivElement>(null)
   const openLink = useCallback((href: string) => { const target = previewTarget(href); if (target) setPreview(target) }, [])
-  const request = useRef<{ body: string; requestId: string }>()
   const selected = state.selected, enabled = selected && state.allowedThreadIds.includes(selected.threadId)
+  const draft = selected ? state.drafts[selected.threadId] : undefined
+  const question = draft?.text ?? '', error = draft?.error ?? ''
+  const setQuestion = (text: string) => { if (selected) store.updateDraft(selected.threadId, { text }) }
+  const setError = (error: string) => { if (selected) store.updateDraft(selected.threadId, { error }) }
+  const followTail = useRef(true)
   const busy = state.exchanges.some(item => item.threadId === selected?.threadId && item.status === 'pending')
   const history = selected ? state.transcripts[selected.threadId] : undefined
-  useEffect(() => { setPreview(null); setImages([]); setUploading(false); uploadGeneration.current++; if (content.current) content.current.scrollTop = 0 }, [selected?.threadId])
+  useEffect(() => { setPreview(null); setImages([]); setUploading(false); uploadGeneration.current++; followTail.current = true; if (content.current) content.current.scrollTop = 0 }, [selected?.threadId])
   useEffect(() => () => { uploadGeneration.current++ }, [])
-  useEffect(() => { if (selected) void store.loadTranscript(selected.threadId) }, [selected?.threadId, store])
-  useEffect(() => {
-    const pending = state.exchanges.find(item => item.threadId === selected?.threadId && item.status === 'pending' && item.turnId)
-    if (!selected || !pending) return
-    let stopped = false, running = false
-    const poll = async () => {
-      if (running || document.visibilityState === 'hidden') return
-      running = true
-      try {
-        await store.loadTranscript(selected.threadId, false, true)
-        if (stopped) return
-        const turn = store.getSnapshot().transcripts[selected.threadId]?.turns.find(turn => turn.id === pending.turnId)
-        if (turn?.status === 'completed') {
-          store.addExchange({ ...pending, status: 'completed', text: turn.messages.filter(message => message.role === 'assistant').map(message => message.text).join('\n') })
-        } else if (turn && ['failed', 'interrupted'].includes(turn.status)) {
-          store.addExchange({ ...pending, status: 'uncertain', error: '原会话本轮已停止，请检查 Codex。' })
-        }
-      } finally { running = false }
-    }
-    void poll()
-    const timer = setInterval(() => { void poll() }, 2500)
-    return () => { stopped = true; clearInterval(timer) }
-  }, [selected?.threadId, state.exchanges, store])
+  useEffect(() => selected ? store.watchTranscript(selected.threadId) : undefined, [selected?.threadId, store])
   const latestExchange = state.exchanges.filter(item => item.threadId === selected?.threadId).at(-1)
   useEffect(() => {
-    if (latestExchange && content.current) content.current.scrollTop = content.current.scrollHeight
-  }, [latestExchange?.requestId, latestExchange?.status])
+    if (followTail.current && content.current) content.current.scrollTop = content.current.scrollHeight
+  }, [selected?.threadId, history?.lastSyncedAt, latestExchange?.requestId, latestExchange?.status])
   const turns = [...history?.turns ?? []]
   const seenTurns = new Set(turns.map(turn => turn.id))
   for (const exchange of state.exchanges.filter(item => item.threadId === selected?.threadId)) {
@@ -152,7 +132,7 @@ export function CodexWorkspacePage({ store, openManagedWork }: { store: CodexWor
     if (seenTurns.has(id)) continue
     turns.push({ id, startedAt: exchange.startedAt ?? 0, status: exchange.status ?? 'completed', messages: [
       { id: exchange.requestId + '-user', role: 'user', text: exchange.question, truncated: false, ...(exchange.images?.length ? { images: exchange.images } : {}) },
-      { id: exchange.requestId + '-assistant', role: 'assistant', text: exchange.status === 'pending' ? '正在发送并等待 Codex 回复…' : exchange.status === 'uncertain' ? exchange.error ?? '结果未确认，请检查原会话，避免重复发送。' : exchange.text, truncated: false },
+      { id: exchange.requestId + '-assistant', role: 'assistant', text: exchange.status === 'pending' ? exchange.delivery ? exchange.delivery.transport === 'desktop_app' ? '已送达原会话，等待处理…' : '已入队，等待原会话处理…' : exchange.submitted ? '请求已受理，正在等待投递回执…' : '正在提交到这条 Codex 会话…' : exchange.status === 'uncertain' ? exchange.error ?? '结果未确认，请检查原会话，避免重复发送。' : exchange.text, truncated: false },
     ] })
   }
   turns.sort((a, b) => a.startedAt - b.startedAt)
@@ -178,8 +158,10 @@ export function CodexWorkspacePage({ store, openManagedWork }: { store: CodexWor
   async function ask(event: FormEvent) {
     event.preventDefault(); if (!selected || !enabled || busy || uploading || !question.trim() && !images.length) return
     const attached = images, target = selected.threadId, text = question.trim(), body = JSON.stringify({ threadId: target, question: text, confirmed: true, ...(attached.length ? { images: attached.map(image => image.id) } : {}) })
-    if (request.current?.body !== body) request.current = { body, requestId: crypto.randomUUID() }
-    const requestId = request.current.requestId
+    const previousRequest = store.getSnapshot().drafts[target]?.request
+    const sending = previousRequest?.body === body ? previousRequest : { body, requestId: crypto.randomUUID() }
+    store.updateDraft(target, { request: sending })
+    const requestId = sending.requestId
     const exchange = { requestId, threadId: target, question: text, text: '', ...(attached.length ? { images: attached.map(image => ({ src: image.src, alt: image.name })) } : {}) }
     store.addExchange({ ...exchange, status: 'pending', submitted: false })
     setQuestion(''); setImages([])
@@ -187,14 +169,17 @@ export function CodexWorkspacePage({ store, openManagedWork }: { store: CodexWor
     try {
       const response = await fetch('/session-hub/api/codex/submit', { method: 'POST', headers: { 'x-orchestrator-request': '1', 'content-type': 'application/json' },
         body: JSON.stringify({ ...JSON.parse(body), requestId }) })
-      const reply = await response.json() as { error?: string; threadId: string; turnId: string; text: string; status: string }
+      const reply = await response.json() as { error?: string; requestId?: string; threadId?: string; status?: string }
       if (!response.ok) throw new Error(reply.error ?? '续聊未完成。')
+      if (reply.requestId !== requestId || reply.threadId !== target || reply.status !== 'pending') throw new Error('受理回执与发送的请求或会话不匹配。')
       if (store.getSnapshot().exchanges.find(item => item.requestId === requestId)?.status === 'pending') {
         store.addExchange({ ...exchange, status: 'pending', submitted: true }); void store.refreshRequests()
       }
-      request.current = undefined
+      store.clearDraftRequest(target, requestId)
     } catch (failure) {
-      store.addExchange({ ...exchange, status: 'uncertain', error: (failure instanceof Error ? failure.message : '连接中断，结果未知。') + ' 请检查原会话，避免重复发送。' })
+      const error = (failure instanceof Error ? failure.message : '连接中断，结果未知。') + ' 请检查原会话，避免重复发送。'
+      store.addExchange({ ...exchange, status: 'uncertain', error })
+      store.updateDraft(target, { error })
     }
   }
   if (state.newTarget) return <NewCodexConversation key={state.newTarget.cwd} store={store} openManagedWork={openManagedWork} />
@@ -206,20 +191,20 @@ export function CodexWorkspacePage({ store, openManagedWork }: { store: CodexWor
     <div className="cw-main-area"><div className="cw-chat">
     <ConversationIndex container={content} items={turns.map((turn, index) => ({ id: turn.id,
       label: (turn.messages.find(message => message.role === 'user')?.text ?? turn.messages[0]?.text ?? '第 ' + (index + 1) + ' 轮').slice(0, 120) }))} />
-    <div className="cw-content" ref={content}>
+    <div className="cw-content" ref={content} onScroll={() => { const node = content.current; if (node) followTail.current = node.scrollHeight - node.scrollTop - node.clientHeight < 80 }}>
       {!selected && <TargetFinder />}
       {state.error && <p className="dt-error" role="alert">{state.error}</p>}
       {selected ? <><p className="dt-hint">Codex · {selected.projectName} · {selected.cwd}</p>
         <div className="cw-history-tools">
           <Button size="sm" disabled={history?.loading} onClick={() => { void store.loadTranscript(selected.threadId, false, true) }}>刷新会话内容</Button>
           {history?.nextCursor && <Button size="sm" disabled={history.loading} onClick={() => { void store.loadTranscript(selected.threadId, true) }}>加载更早消息</Button>}
-          {history?.loading && <span className="dt-hint" role="status">读取会话内容…</span>}
+          <span className="dt-hint" role="status">{history?.syncPaused ? '后台已暂停内容刷新' : history?.loading ? history.loaded ? '正在更新消息…' : '正在读取会话内容…' : history?.error ? '连接暂不可用，保留上次消息' : history?.lastSyncedAt ? '消息已同步 · ' + new Date(history.lastSyncedAt).toLocaleTimeString() : '等待同步消息'}</span>
         </div>
         {history?.error && <p className="dt-error" role="alert">{history.error}</p>}
         {history?.loaded && !turns.length && <p className="dt-hint">这条会话暂无可展示的消息。</p>}
-        {turns.map(turn => <section className="cw-reply" aria-label="会话消息" aria-busy={turn.status === 'pending'} key={turn.id} data-turn-id={turn.id}>
+        {turns.map(turn => <section className="cw-reply" aria-label="会话消息" aria-busy={['pending', 'inProgress', 'in_progress', 'running'].includes(turn.status)} key={turn.id} data-turn-id={turn.id}>
           {turn.messages.map(message => <div key={message.id} className={'cw-message cw-message-' + message.role}>
-            {message.role === 'assistant' && turn.status === 'pending' && <span role="status" className="cw-activity-spinner" aria-label="等待原会话回复" />}
+            {message.role === 'assistant' && ['pending', 'inProgress', 'in_progress', 'running'].includes(turn.status) && <span role="status" className="cw-activity-spinner" aria-label="等待原会话回复" />}
             {message.role === 'assistant' ? <ConversationMarkdown text={message.text} onLink={openLink} /> : message.text}{message.truncated && <small className="cw-message-notice">内容较长，当前仅展示部分；可在 Codex 打开完整消息。</small>}
             {'images' in message && message.images?.map((image, index) => <ConversationImage key={image.src + index} src={image.src} alt={image.alt} />)}
           </div>)}
@@ -239,7 +224,7 @@ export function CodexWorkspacePage({ store, openManagedWork }: { store: CodexWor
         maxLength={8000} rows={3} disabled={!enabled || busy} />
       <input ref={imageInput} type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden aria-label="选择要发送的图片"
         onChange={event => { void attach([...event.target.files ?? []]); event.target.value = '' }} />
-      <div><span>{enabled ? '发送到原会话，沿用该会话的模型与权限' : '此会话未启用续聊，仅可查看目录或打开原会话。'}</span>
+      <div><span data-thread-id={selected.threadId}>{enabled ? '直接发送到「' + selected.title + '」，沿用该会话的模型与权限' : '此会话未启用续聊，仅可查看目录或打开原会话。'}</span>
         <Button type="button" disabled={!enabled || busy || uploading} onClick={() => imageInput.current?.click()}>{uploading ? '添加图片中…' : '添加图片'}</Button>
         <ManagedWorkButton workspace={selected.cwd} targetUid={'codex:' + selected.threadId} instruction={question}
           disabled={busy || uploading || !!images.length} onPrepared={openManagedWork} />
@@ -295,9 +280,10 @@ function NewCodexConversation({ store, openManagedWork }: { store: CodexWorkspac
       const thread: CodexThread = { provider: 'codex', threadId: result.threadId, title: question.slice(0,100) || '图片提问', cwd: target.cwd, projectName: target.projectName, updatedAt: Math.floor(Date.now()/1000) }
       store.addExchange({ requestId: id, threadId: thread.threadId, turnId: result.turnId, question, text: '', status: 'pending',
         ...(images.length ? { images: images.map(image => ({ src: image.dataUrl, alt: image.name })) } : {}) })
-      store.select(thread); void store.refresh()
-    } catch (failure) { setError(failure instanceof Error ? failure.message : '创建结果未知，请检查原会话，避免重复发送。') }
-    finally { setBusy(false) }
+      if (mounted.current && store.getSnapshot().newTarget === target) store.select(thread)
+      void store.refresh()
+    } catch (failure) { if (mounted.current) setError(failure instanceof Error ? failure.message : '创建结果未知，请检查原会话，避免重复发送。') }
+    finally { if (mounted.current) setBusy(false) }
   }
   return <main className="cw-page">{styles}
     <header className="cw-page-head"><h1>新会话</h1><span>{target.projectName}</span></header>

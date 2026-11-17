@@ -41,7 +41,7 @@ it('uploads and previews an image, then sends a typed attachment token to the ex
     if (url.includes('/activity/')) return Response.json({ sessions: [] })
     if (url.includes('/transcript')) return Response.json({ threadId: id, turns: [], nextCursor: null })
     if (url.includes('/upload')) return Response.json({ id: imageId, src: png })
-    if (url.endsWith('/submit')) return Response.json({ requestId: imageId, status: 'pending' })
+    if (url.endsWith('/submit')) return Response.json({ requestId: body.requestId, threadId: body.threadId, status: 'pending' }, { status: 202 })
     if (url.includes('/requests/')) return Response.json({ status: 'pending' })
     return Response.json({ threads: [thread], total: 1, nextOffset: null })
   }))
@@ -55,6 +55,7 @@ it('uploads and previews an image, then sends a typed attachment token to the ex
   await act(async () => host.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })))
   expect(calls.find(call => call.url.endsWith('/submit'))?.body).toMatchObject({ threadId: id, question: '', images: [imageId], confirmed: true })
   expect(store.getSnapshot().exchanges[0]?.images).toHaveLength(1)
+  expect(store.getSnapshot().exchanges[0]).toMatchObject({ threadId: id, status: 'pending', submitted: true })
 })
 it('puts cross-project recent sessions above projects and opens the original session identity', async () => {
   const rows = [thread, { ...thread, threadId: imageId, title: 'newest', projectName: 'Other', cwd: 'F:\\Other', updatedAt: 10 }]

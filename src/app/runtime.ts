@@ -38,6 +38,7 @@ import { registerSessionHub } from './session-hub-http.ts'
 import { LocalWork, localWorkKind, workspaceKey } from './local-work.ts'
 import { ContextTargets } from './context-targets.ts'
 import { ManagedWork } from './managed-work.ts'
+import { BotTicketView } from './bot-ticket-view.ts'
 import { workTitle } from './work-instruction.ts'
 import { TargetResolver } from './target-resolver.ts'
 import { CodexExecutor } from '../executor/codex.ts'
@@ -93,6 +94,7 @@ export class Runtime extends Service implements SourceHost {
   private readonly board = new HealthBoard()
   private readonly runtimeHealth = this.board.claim('runtime', { state: 'starting', detail: '' })
   readonly masterId: string
+  private botTicketView?: BotTicketView
   private readonly sourceLinks = new TextCache(200_000)
   private readonly stopped = new AbortController()
   private readonly disposers: (() => void)[] = []
@@ -224,6 +226,7 @@ export class Runtime extends Service implements SourceHost {
       }
       const engine = this.engine = new Engine({ repo: store, scope: sources, policy, assessor, executor,
         outbox, prepareTicket: (ticket, outcome) => executor.prepare(ticket, outcome), emit: event => {
+          if (event.type === 'ticket.ended' || event.type === 'assignment.failed') this.botTicketView?.changed()
           // Notify the main Session only about domain events it did not initiate itself.
           const notice = this.quiet ? undefined : eventNotice(event, id => store.tickets.get(id))
           if (notice) sessions.notify(...notice)
@@ -315,11 +318,13 @@ export class Runtime extends Service implements SourceHost {
       const resolver = new TargetResolver(new ContextTargets(catalog, this.store), { llm: this.ctx.llm,
         model: () => this.store.settings().eval.model, timeoutMs: () => this.store.settings().eval.timeoutSeconds * 1000, lifetime: this.lifetime })
       const targets = resolver.targets
+      const botTicketView = this.botTicketView = new BotTicketView(targets, this.store)
       const activities = new SessionActivities({ targets, running: threadId => this.store.tickets.list().some(ticket =>
         this.native?.binding(ticket.id)?.threadId === threadId && this.native.running(ticket.id)) })
       const deferred = this.deferred = new DeferredWork({ store: this.store, targets, activities, work,
         enabled: () => !this.closing() && !!this.machine.sessionExecution && !this.paused() })
       const managed = new ManagedWork({ store: this.store, targets, activities, work,
+        chatDispatch: () => process.env.DSH_MANAGED_WORK_CHAT_DISPATCH === '1',
         options: () => ({ enabled: !!this.machine.sessionExecution, paused: this.paused(),
           defaultPermission: (this.sources.instance('local-work')?.config as { defaultPermission?: 'read-only' | 'workspace-write' } | undefined)?.defaultPermission,
           workspaces: ((this.sources.instance('local-work')?.config as { workspaces?: { path: string }[] } | undefined)?.workspaces ?? []).map(item => item.path) }),
@@ -373,7 +378,7 @@ export class Runtime extends Service implements SourceHost {
         ...knowledgeTools(join(this.machine.stateDir, 'knowledge-library-organized.json'))]
       const poll = setInterval(() => { void deferred.tick().catch(() => {}) }, 5000); poll.unref?.()
       this.disposers.push(() => clearInterval(poll))
-      this.disposers.push(registerSessionHub(this.ctx, this.sessionHub, catalog, router, work, undefined, resolver, join(this.machine.stateDir, 'knowledge-graph-cache.json'), activities, deferred, chatgpt, cloudWorkers, () => this.store.settings().eval.model, managed))
+      this.disposers.push(registerSessionHub(this.ctx, this.sessionHub, catalog, router, work, undefined, resolver, join(this.machine.stateDir, 'knowledge-graph-cache.json'), activities, deferred, chatgpt, cloudWorkers, () => this.store.settings().eval.model, managed, botTicketView))
       if (this.machine.sessionExecution) {
         this.sessions.install()
         this.executor.install()

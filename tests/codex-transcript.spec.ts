@@ -10,18 +10,24 @@ it('pages only the selected thread and projects user/assistant text in chronolog
     }
     expect(method).toBe('thread/items/list')
     return { data: [
-      { turnId: params.turnId, item: { id: 'u', type: 'userMessage', content: [{ type: 'text', text: 'question' }] } },
+      { turnId: params.turnId, item: { id: 'u', clientId: 'client-request', type: 'userMessage', content: [{ type: 'text', text: 'question' }] } },
       { turnId: params.turnId, item: { id: 'tool', type: 'commandExecution', output: 'DO_NOT_EXPOSE' } },
       { turnId: params.turnId, item: { id: 'reason', type: 'reasoning', text: 'DO_NOT_EXPOSE' } },
-      { turnId: params.turnId, item: { id: 'a', type: 'agentMessage', phase: 'final_answer', text: 'reply' } },
+      { turnId: params.turnId, item: { id: 'p', type: 'agentMessage', phase: 'commentary', text: 'published progress' } },
+      { turnId: params.turnId, item: { id: 'a', clientId: 'not-user-input', type: 'agentMessage', phase: 'final_answer', text: 'reply' } },
     ] }
   })
   const result = await readCodexTranscript({ threadId, cursor: 'page', limit: 2 }, () => ({ initialize: async () => {}, request, close }))
   expect(result.nextCursor).toBe('older-page')
   expect(result.turns.map(turn => turn.id)).toEqual(['old', 'new'])
   expect(result.turns[0]?.messages.map(message => message.role)).toEqual(['user', 'assistant'])
+  expect(result.turns[0]?.messages[0]).toMatchObject({ id: 'u', clientId: 'client-request', role: 'user' })
+  expect(result.turns[0]?.messages[1]).not.toHaveProperty('clientId')
   expect(JSON.stringify(result)).not.toContain('DO_NOT_EXPOSE')
   expect(close).toHaveBeenCalledOnce()
+  const progress = await readCodexTranscript({ threadId, limit: 2, progress: 'published' }, () => ({ initialize: async () => {}, request, close }))
+  expect(progress.turns[0]?.messages[1]).toMatchObject({ phase: 'commentary', text: 'published progress' })
+  expect(JSON.stringify(progress)).not.toContain('DO_NOT_EXPOSE')
 })
 it('rejects other-turn records and closes the read-only connection', async () => {
   const close = vi.fn(), request = vi.fn(async (method: string) => method === 'thread/turns/list'

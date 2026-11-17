@@ -4,6 +4,7 @@ import { Button } from './controls.tsx'
 import { usePanel } from './provider.tsx'
 import type { ManagedWork } from '../app/managed-work.ts'
 import { readableWorkInstruction } from '../app/work-instruction.ts'
+import { CodexSessionButton } from './codex-session-button.tsx'
 
 type WorkView = ReturnType<ManagedWork['list']>
 type Permission = 'read-only' | 'workspace-write'
@@ -16,8 +17,9 @@ function PermissionSelect({ value, onChange, disabled, scope }: { value: Permiss
   </select></label>
 }
 const headers = { 'x-orchestrator-request': '1', 'content-type': 'application/json' }
-async function request<T>(path: string, body?: unknown): Promise<T> {
-  const response = await fetch('/session-hub/api/managed-work' + path, { method: body ? 'POST' : 'GET', headers,
+async function request<T>(path: string, body?: unknown, credential?: string): Promise<T> {
+  const response = await fetch('/session-hub/api/managed-work' + path, { method: body ? 'POST' : 'GET',
+    headers: { ...headers, ...(credential ? { 'x-superagent-bot-token': credential } : {}) },
     ...(body ? { body: JSON.stringify(body) } : {}) })
   const value = await response.json()
   if (!response.ok) throw Error(value.error ?? '工作入口暂不可用')
@@ -50,11 +52,12 @@ export function ManagedWorkPanel() {
   const { navigate } = usePanel()
   const { data, error, reload } = usePoll(() => request<WorkView>(''), [])
   const [busy, setBusy] = useState(''), [failure, setFailure] = useState(''), [showForm, setShowForm] = useState(false)
+  const [credential, setCredential] = useState('')
   const [workspace, setWorkspace] = useState(''), [instruction, setInstruction] = useState('')
   const [permission, setPermission] = useState<Permission | ''>(''), [permissions, setPermissions] = useState<Record<string, Permission>>({})
   async function action(path: string, body: unknown, id: string) {
     setBusy(id); setFailure('')
-    try { await request(path, body); if (path === '/prepare') { setInstruction(''); setShowForm(false) }; await reload() }
+    try { await request(path, body, credential); if (path === '/prepare') { setInstruction(''); setShowForm(false) }; await reload() }
     catch (error) { setFailure(error instanceof Error ? error.message : '操作失败') }
     finally { setBusy('') }
   }
@@ -73,6 +76,9 @@ export function ManagedWorkPanel() {
   const visible = [...pending, ...data?.proposals.filter(proposal => proposal.state === 'submitted' && !pending.some(item => item.id === proposal.id)).slice(0, 3) ?? []]
   return <section className="sa-managed" aria-label="受管工作入口">
     <header><h3>工作受理</h3><Button size="sm" variant="ghost" onClick={() => setShowForm(value => !value)}>新工作</Button></header>
+    <label className="dt-field">管理凭据<input type="password" autoComplete="off" aria-label="工作管理凭据" value={credential}
+      onChange={event => setCredential(event.target.value)} /></label>
+    <small>确认与取消需要本机管理凭据，仅在当前页面内存中保留。也可使用已认证的 Bot 草案卡。</small>
     {error && <p role="alert">工作入口读取失败：{error.message}</p>}
     {failure && <p role="alert" className="dt-error">{failure}</p>}
     {data && !data.options.enabled && <p className="dt-hint">可以准备工作卡，执行端口尚未启用，不会派发。</p>}
@@ -107,6 +113,7 @@ export function ManagedWorkPanel() {
         <button type="button" className="dt-textlink" onClick={() => navigate({ page: 'execution', id: ticket.ticket_id })}>工单：{ticket.title}</button>
         <small>状态：{workStateLabel(ticket.state)}{ticket.preview ? ' · ' + ticket.preview : ''}</small>
         {ticket.native && <><small>原生会话：{ticket.native.threadId}</small>
+          <CodexSessionButton threadId={ticket.native.threadId} />
           <small>桌面项目：{ticket.native.desktopError || (ticket.native.desktop ? ticket.native.desktop.projectName + '（元数据已关联）' : '尚未确认关联')}</small>
           <small>{ticket.native.transport === 'desktop' ? '会话由桌面管理，DSH 不占用；可直接参与和接续。' : '后台占用：' + (ticket.native.writer?.state === 'released' ? '已释放' : ticket.native.writer?.state === 'releasing' ? '正在释放'
             : ticket.native.writer?.state === 'held' && ticket.state === 'working' ? '正在执行；完成后自动释放，随后可在桌面接续' : '占用状态待确认')}</small>
@@ -119,7 +126,8 @@ export function ManagedWorkPanel() {
     {!!data?.works.length && <details><summary>工作总账 · 含已结束工作</summary>{data.works.map(work => <article className="sa-managed-card" key={work.ticket_id}>
       <button type="button" className="dt-textlink" onClick={() => navigate({ page: 'execution', id: work.ticket_id })}>{work.title}</button>
       <small>{String(work.workspace ?? '')} · {work.executor} · {workStateLabel(work.state)}</small>
-      <small>工作：{String(work.workId ?? '')}</small>{work.preview && <p>{work.preview}</p>}
+      <small>工作：{String(work.workId ?? '')}</small>
+      {work.nativeThreadId && <CodexSessionButton threadId={work.nativeThreadId} />}{work.preview && <p>{work.preview}</p>}
     </article>)}</details>}
   </section>
 }

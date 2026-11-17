@@ -8,6 +8,7 @@ import { CodexRpc } from '../executor/codex-rpc.ts'
 export const ActivityBatch = z.object({ observedAt: z.string().datetime(), sessions: z.array(z.object({
   threadId: z.string().uuid(), workspace: z.string().min(3).max(600),
   state: z.enum(['running', 'idle', 'waiting_user', 'failed', 'unknown']),
+  reason: z.string().min(1).max(200).optional(),
 }).strict()).min(1).max(100) }).strict()
 export interface SessionActivity {
   threadId: string; workspace: string; state: 'running' | 'idle' | 'waiting_user' | 'failed' | 'unknown'
@@ -41,20 +42,31 @@ export class SessionActivities {
       if (workspaceKey(item.workspace) !== card.workspace) throw Error('Activity workspace mismatch')
       const prior = this.desktop.get(item.threadId)
       if (prior && Date.parse(prior.observedAt) > at) throw Error('Out-of-order observation')
-      return { ...item, workspace: card.workspace, source: 'desktop-bridge' as const, observedAt: batch.observedAt, stale: false, reason: 'Desktop connector snapshot' }
+      return { ...item, workspace: card.workspace, source: 'desktop-bridge' as const, observedAt: batch.observedAt, stale: false, reason: item.reason ?? 'Desktop connector snapshot' }
     })
     checked.forEach(item => this.desktop.set(item.threadId, item))
     return { received: checked.length, observedAt: batch.observedAt }
+  }
+  /** Retain the last desktop observation during a transport gap; only a later publish makes it fresh. */
+  invalidateDesktop() {
+    for (const [threadId, cached] of this.desktop) {
+      if (cached.source === 'desktop-bridge') this.desktop.set(threadId, { ...cached, stale: true })
+    }
   }
   /** Cheap view for visible sidebar rows; never spawns one native process per indexed session. */
   snapshot(input: unknown): SessionActivity[] {
     const ids = z.array(z.string().uuid()).max(100).parse(input)
     return [...new Set(ids)].map(threadId => {
-      const card = this.card(threadId), observedAt = new Date(this.now()).toISOString()
+      const card = this.host.targets.card('codex:' + threadId), observedAt = new Date(this.now()).toISOString()
+      if (!card || card.archived) {
+        this.watchedIds.delete(threadId)
+        return { threadId, workspace: card?.workspace ?? this.desktop.get(threadId)?.workspace ?? '', state: 'unknown', source: 'unavailable',
+          observedAt, stale: true, reason: 'Indexed session is no longer available' }
+      }
       this.watch(threadId)
       if (this.host.running?.(threadId)) return { threadId, workspace: card.workspace, state: 'running', source: 'engine-driver', observedAt, stale: false, reason: 'Original Engine native turn is active' }
       const cached = this.desktop.get(threadId)
-      if (cached) return { ...cached, stale: this.now() - Date.parse(cached.observedAt) > (this.host.ttlMs ?? 60000) }
+      if (cached) return { ...cached, stale: cached.stale || this.now() - Date.parse(cached.observedAt) > (this.host.ttlMs ?? 60000) }
       return { threadId, workspace: card.workspace, state: 'unknown', source: 'unavailable', observedAt, stale: false, reason: 'No live observation available' }
     })
   }
@@ -63,7 +75,7 @@ export class SessionActivities {
     this.watch(threadId)
     if (this.host.running?.(threadId)) return { threadId, workspace: card.workspace, state: 'running', source: 'engine-driver', observedAt, stale: false, reason: 'Original Engine native turn is active' }
     const cached = this.desktop.get(threadId)
-    if (cached) return { ...cached, stale: this.now() - Date.parse(cached.observedAt) > (this.host.ttlMs ?? 60000) }
+    if (cached) return { ...cached, stale: cached.stale || this.now() - Date.parse(cached.observedAt) > (this.host.ttlMs ?? 60000) }
     let rpc: CodexRpc | undefined, timer: ReturnType<typeof setTimeout> | undefined
     try {
       const read = this.host.probe ? this.host.probe(threadId) : (async () => {

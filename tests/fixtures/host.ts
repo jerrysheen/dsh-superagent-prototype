@@ -134,6 +134,7 @@ export function subagentRuntime(agents: Map<string, FakeAgent>) {
 
 /** @param seed - writes to the database before the Runtime opens it, such as records an earlier version stored. */
 export async function startRuntime(seed?: (store: Store) => void, machine: Partial<Machine> = {}, inheritedTools?: string[]) {
+  if (!process.env.DSH_BOT_BRIDGE_TOKEN) vi.stubEnv('DSH_BOT_BRIDGE_TOKEN', 'fixture-management-credential')
   const directory = mkdtempSync(join(tmpdir(), 'orchestrator-host-'))
   const AGENT = join(directory, 'agent-gh.exe'), BOT = join(directory, 'lark-bot.exe')
   const repository = { default_branch: 'master', permissions: { push: true } }
@@ -287,10 +288,10 @@ export async function startRuntime(seed?: (store: Store) => void, machine: Parti
     const ticket = runtime.store.tickets.get((result.ticket as { ticket_id: string }).ticket_id)!
     return { trigger, ticket, sessionId: `worker-${ticket.id}` }
   }
-  async function api(method: string, path: string, json?: unknown, prefix = '/orchestrator/api') {
+  async function api(method: string, path: string, json?: unknown, prefix = '/orchestrator/api', headers: Record<string, string> = {}) {
     let status = 0, text = ''
     const chunks = json === undefined ? [] : [Buffer.from(JSON.stringify(json))]
-    const req = { method, url: `${prefix}/${path}`, headers: { host: '127.0.0.1:3082', 'x-orchestrator-request': '1' }, async *[Symbol.asyncIterator]() { yield* chunks } }
+    const req = { method, url: `${prefix}/${path}`, headers: { host: '127.0.0.1:3082', 'x-orchestrator-request': '1', ...headers }, async *[Symbol.asyncIterator]() { yield* chunks } }
     const handler = [...http].filter(([prefix]) => req.url.startsWith(prefix)).sort(([a], [b]) => b.length - a.length)[0]?.[1]
     if (!handler) throw new Error('No registered HTTP route for ' + req.url)
     await handler(req, { writeHead: (code: number) => { status = code }, end: (data: string) => { text = data } })
@@ -301,7 +302,10 @@ export async function startRuntime(seed?: (store: Store) => void, machine: Parti
   const step = (sessionId: string) => { steps.get(sessionId)!() }
   /** A step of the worker claims what waits for it, and is cut off before the Session took it. */
   const claim = (sessionId: string) => { claims.get(sessionId)!() }
-  const sessionApi = (method: string, path: string, json?: unknown) => api(method, path, json, '/session-hub/api')
+  const sessionApi = (method: string, path: string, json?: unknown, headers?: Record<string, string>) => api(method, path, json, '/session-hub/api', {
+    ...(method === 'POST' && ['managed-work/confirm', 'managed-work/cancel'].includes(path)
+      ? { 'x-superagent-bot-token': process.env.DSH_BOT_BRIDGE_TOKEN! } : {}), ...headers,
+  })
   return { runtime, ctx, directory, agents, tools, deliveries, relays, candidates, runTool, route, acceptedTicket, api, sessionApi, controller, subprocess, hooks, resolveDefault, stop,
     jobs, subagents, step, claim, permissions: services.permissionPresets.set as Mock<(session: unknown, preset: string) => void> }
 }

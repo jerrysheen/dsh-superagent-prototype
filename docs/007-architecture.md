@@ -443,6 +443,9 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/knowledge-taxonomy.ts` | Domain definitions and topic classification. |
 | `src/app/knowledge-tools.ts` | Bounded knowledge lookup tools for the main Agent. |
 | `src/app/managed-work.ts` | Confirmable work cards, authorization checks and Engine admission. |
+| `src/app/bot-ticket-view.ts` | Bot Ticket summaries, human decisions and paged report, Assignment and input reads. |
+| `src/app/codex-user-queue.ts` | Native user-message queue submission and correlation receipts. |
+| `src/client/codex-session-button.tsx` | Explicit navigation to a registered native Codex session. |
 | `src/app/project-progress.ts` | Reads maintained project progress evidence within allowed workspaces. |
 | `src/app/tool-output.ts` | Normalizes tool results for the Agent tool interface. |
 | `src/app/vision-probe.ts` | Bounded model image-input probe. |
@@ -560,6 +563,10 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/managed-work-native.spec.ts` | Native target ownership and work continuation. |
 | `tests/managed-work-ui.spec.tsx` | Work card preparation, permissions and confirmation. |
 | `tests/managed-work.spec.ts` | Draft deduplication, scope revocation and authorization. |
+| `tests/bot-ticket-http.spec.ts`, `bot-ticket-view.spec.ts` | Guarded Bot Ticket routes, status guidance and complete paged reads. |
+| `tests/codex-conversation-sync.spec.tsx` | Native conversation refresh and user-message correlation. |
+| `tests/codex-session-button.spec.tsx` | Native session navigation and failure feedback. |
+| `tests/codex-user-queue.spec.ts` | Native queue payloads and accepted-message receipts. |
 | `tests/reference-textarea.spec.tsx` | Reference selection and input behavior. |
 | `tests/tool-output.spec.ts` | Tool result normalization. |
 | `tests/vision-probe.spec.ts` | Bounded image-input probing. |

@@ -3,6 +3,7 @@ import { createServer } from 'node:net'
 import { randomUUID } from 'node:crypto'
 import { DesktopActivityClient, DesktopActivityObserver, DesktopChatClient, DesktopProjectClient, DesktopWorkClient, desktopActivityPipe } from '../src/app/desktop-activity.ts'
 import { SessionActivities } from '../src/app/session-activity.ts'
+import { DeferredWork } from '../src/app/deferred-work.ts'
 import type { ContextTargets } from '../src/app/context-targets.ts'
 const id = '01a1a4a1-9b15-7202-9b2e-36a217f5535d', other = '01a1a48d-7bad-7cc0-8a09-a957b900fe30'
 const workspace = 'f:\\github\\dshsuperagent'
@@ -107,12 +108,58 @@ it('continuously observes both sessions, follows pagination and reconnects witho
     .mockRejectedValueOnce(Error('Disconnected')).mockResolvedValue({ threads: [{ id, cwd: workspace, status: 'idle' }, { id: other, cwd: workspace, status: 'idle' }] })
   const close = vi.fn(), observer = new DesktopActivityObserver({ client: { read, close }, targets, activities })
   await observer.tick()
-  expect(activities.snapshot([id, other]).map(row => row.state)).toEqual(['running', 'idle'])
+  expect(activities.snapshot([id, other]).map(row => row.state)).toEqual(['running', 'unknown'])
   expect(read.mock.calls[1]).toEqual(['second'])
+  const beforeDisconnect = activities.snapshot([id])[0]!
   await observer.tick(); expect(close).toHaveBeenCalledOnce()
-  expect(activities.snapshot([id])[0]?.state).toBe('running')
-  await observer.tick(); expect(activities.snapshot([id])[0]?.state).toBe('idle')
+  expect(activities.snapshot([id])[0]).toMatchObject({ state: 'running', stale: true,
+    observedAt: beforeDisconnect.observedAt, reason: beforeDisconnect.reason })
+  await observer.tick(); expect(activities.snapshot([id])[0]).toMatchObject({ state: 'idle', stale: false })
   await observer.stop()
+})
+it('requires an explicit fresh idle observation before releasing deferred work', async () => {
+  const targets = { cards: () => [{ threadId: id, workspace, archived: false }], card: () => ({ workspace, archived: false }) } as unknown as ContextTargets
+  const activities = new SessionActivities({ targets }), values = new Map(), submit = vi.fn()
+  const store = { get: (key: string) => values.get(key), set: (key: string, value: unknown) => values.set(key, structuredClone(value)) }
+  const gate = new DeferredWork({ targets, activities, store: store as never, work: { submit }, enabled: () => true })
+  const read = vi.fn(), observer = new DesktopActivityObserver({ targets, activities, client: { read, close: vi.fn() } })
+  gate.enqueue({ confirmed: true, request: { eventId: 'wait-for-idle', workId: 'idle-review', workspace, executor: 'codex',
+    codexThreadId: id, instruction: '只读检查，不修改文件', permission: 'read-only' } })
+  try {
+    for (const status of ['notLoaded', 'unrecognized']) {
+      read.mockResolvedValueOnce({ threads: [{ id, cwd: workspace, status }] })
+      await observer.tick()
+      expect(await activities.get(id)).toMatchObject({ state: 'unknown', source: 'desktop-bridge', reason: expect.stringContaining(status) })
+      await gate.tick(); expect(submit).not.toHaveBeenCalled()
+    }
+    read.mockResolvedValueOnce({ threads: [{ id, cwd: workspace, status: 'idle' }] })
+    await observer.tick()
+    const lastIdle = await activities.get(id)
+    read.mockRejectedValueOnce(Error('Disconnected'))
+    await observer.tick(); await gate.tick()
+    expect(submit).not.toHaveBeenCalled()
+    expect(await activities.get(id)).toEqual({ ...lastIdle, stale: true })
+    read.mockResolvedValueOnce({ threads: [] })
+    await observer.tick(); await gate.tick()
+    expect(submit).not.toHaveBeenCalled()
+    expect(await activities.get(id)).toEqual({ ...lastIdle, stale: true })
+    read.mockResolvedValueOnce({ threads: [{ id, cwd: workspace, status: 'idle' }] })
+    await observer.tick(); await gate.tick()
+    expect(submit).toHaveBeenCalledOnce()
+    expect(await activities.get(id)).toMatchObject({ state: 'idle', stale: false })
+  } finally { await observer.stop() }
+})
+it.each(['F:\\Other', 'invalid'])('isolates workspace %s from other heartbeat updates in the same page', async cwd => {
+  const targets = { cards: () => [id, other].map(threadId => ({ threadId, workspace, archived: false })), card: () => ({ workspace, archived: false }) } as unknown as ContextTargets
+  const activities = new SessionActivities({ targets })
+  activities.publish({ observedAt: new Date().toISOString(), sessions: [id, other].map(threadId => ({ threadId, workspace, state: 'running' })) })
+  const read = vi.fn(async () => ({ threads: [{ id, cwd, status: 'idle' }, { id: other, cwd: workspace, status: 'idle' }] }))
+  const close = vi.fn(), observer = new DesktopActivityObserver({ targets, activities, client: { read, close } })
+  try {
+    await observer.tick()
+    expect(activities.snapshot([id, other]).map(row => row.state)).toEqual(['running', 'idle'])
+    expect(close).not.toHaveBeenCalled()
+  } finally { await observer.stop() }
 })
 it('sends an explicit selected-session message through the desktop owner without model or permission overrides', async () => {
   const path = '\\\\.\\pipe\\dsh-chat-test-' + randomUUID(), calls: any[] = [], sockets = new Set<import('node:net').Socket>()

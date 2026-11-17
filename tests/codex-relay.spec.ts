@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest'
-import { CodexRelay } from '../src/app/codex-relay.ts'
+import { CodexRelay, type CodexQuestion, type CodexQueued, type CodexReply } from '../src/app/codex-relay.ts'
 const threadId = '01a1a0f6-353d-7581-b6dd-077563be0280'
 const input = { requestId: '01a1a0f6-353d-7581-b6dd-077563be0281', threadId, question: 'Reply TEST', confirmed: true }
 it('requires explicit confirmation and an allowlisted target before invoking Codex', () => {
@@ -42,7 +42,25 @@ it('accepts an image-only question while retaining attachment identity for reque
   const run = vi.fn(async () => ({ threadId, turnId: 'image-turn', status: 'completed' as const, text: 'image reply' }))
   const relay = new CodexRelay([threadId], run)
   const imageOnly = { ...input, question: '', images: ['01a1a0f6-353d-7581-b6dd-077563be0283'] }
-  await relay.ask(imageOnly); expect(run).toHaveBeenCalledWith(imageOnly)
+  await relay.ask(imageOnly); expect(run).toHaveBeenCalledWith(imageOnly, expect.any(Function))
   expect(() => relay.ask({ ...imageOnly, images: ['01a1a0f6-353d-7581-b6dd-077563be0284'] })).toThrow(/requestId/)
   expect(() => relay.ask({ ...input, question: '', images: [] })).toThrow()
+})
+
+it('exposes accepted delivery while waiting and preserves the receipt if reply observation becomes uncertain', async () => {
+  let reject!: (reason: Error) => void
+  const delivery = { receiptId: 'native-queue-id', clientUserMessageId: input.requestId, transport: 'native_user_queue' as const }
+  const run = vi.fn((_question: CodexQuestion, onQueued?: CodexQueued) => {
+    onQueued?.(delivery)
+    return new Promise<CodexReply>((_resolve, fail) => { reject = fail })
+  })
+  const relay = new CodexRelay([threadId], run, 'native_user_queue'), result = relay.ask(input)
+  await Promise.resolve()
+  expect(relay.capabilities().transport).toBe('native_user_queue')
+  expect(relay.status(input.requestId)).toEqual({ status: 'pending', delivery })
+  reject(new Error('No matching completed turn observed'))
+  await expect(result).rejects.toThrow(/No matching/)
+  expect(relay.status(input.requestId)).toMatchObject({ status: 'uncertain', delivery, error: 'No matching completed turn observed' })
+  expect(relay.ask(input)).toBe(result)
+  expect(run).toHaveBeenCalledOnce()
 })

@@ -3,8 +3,8 @@ import { z } from 'zod'
 import { CodexReadClient } from './codex-local-client.ts'
 
 export const TranscriptQuery = z.object({ threadId: z.string().uuid(), cursor: z.string().min(1).max(4096).optional(),
-  limit: z.coerce.number().int().min(1).max(10).default(5) }).strict()
-export interface TranscriptMessage { id: string; role: 'user' | 'assistant'; text: string; truncated: boolean; images?: { src: string; alt: string }[] }
+  limit: z.coerce.number().int().min(1).max(10).default(5), progress: z.literal('published').optional() }).strict()
+export interface TranscriptMessage { id: string; clientId?: string; role: 'user' | 'assistant'; text: string; truncated: boolean; phase?: 'commentary' | 'final_answer'; images?: { src: string; alt: string }[] }
 export interface TranscriptTurn { id: string; startedAt: number; status: string; messages: TranscriptMessage[] }
 export interface CodexTranscript { threadId: string; turns: TranscriptTurn[]; nextCursor: string | null }
 interface TranscriptReader { initialize(): Promise<void>; request(method: string, params: unknown): Promise<any>; close(): void }
@@ -30,7 +30,8 @@ export async function readCodexTranscript(input: unknown, createReader: () => Tr
           const item = entry.item
           if (!item || !['userMessage', 'agentMessage'].includes(item.type)) continue
           // Tool execution, reasoning, system prompts and hidden records are not conversation text.
-          if (item.type === 'agentMessage' && item.phase && item.phase !== 'final_answer') continue
+          if (item.type === 'agentMessage' && item.phase && item.phase !== 'final_answer'
+            && !(query.progress === 'published' && item.phase === 'commentary')) continue
           let text = item.type === 'userMessage'
             ? (item.content ?? []).filter((part: any) => part.type === 'text').map((part: any) => String(part.text ?? '')).join('\n')
             : String(item.text ?? '')
@@ -49,7 +50,9 @@ export async function readCodexTranscript(input: unknown, createReader: () => Tr
           if (!text.trim() && !images.length) continue
           const limit = Math.min(40000, remaining)
           if (limit <= 0) throw new Error('当前页内容过多，请使用较小的分页数量。')
-          messages.push({ id: String(item.id), role: item.type === 'userMessage' ? 'user' : 'assistant',
+          messages.push({ id: String(item.id), ...(item.type === 'userMessage' && typeof item.clientId === 'string' ? { clientId: item.clientId } : {}),
+            role: item.type === 'userMessage' ? 'user' : 'assistant',
+            ...(query.progress === 'published' && item.type === 'agentMessage' ? { phase: item.phase === 'commentary' ? 'commentary' as const : 'final_answer' as const } : {}),
             text: text.slice(0, limit), truncated: text.length > limit, ...(images.length ? { images } : {}) })
           remaining -= Math.min(text.length, limit)
         }

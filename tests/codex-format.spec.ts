@@ -1,9 +1,18 @@
 import { expect, it } from 'vitest'
-import { nativeWorkPrompt, parseNativeReport } from '../src/executor/codex-format.ts'
+import { nativeWorkPrompt, parseNativeReport, desktopWorkPrompt, parseDesktopReport, desktopReceiptToken } from '../src/executor/codex-format.ts'
 import { readableWorkInstruction, workTitle } from '../src/app/work-instruction.ts'
 
 const reference = '\n[Project folder reference: path metadata only, not file contents or execution/write authorization]\n'
   + JSON.stringify({ uid: 'project:one', title: 'Example', workspace: 'F:\\Example' }) + '\n'
+
+it('keeps the desktop receipt contract explicit despite restrictive body formatting and diagnoses missing receipts', () => {
+  const prompt = desktopWorkPrompt({ text: '只输出结论，其余不需要', workspace: 'F:\\Example', permission: 'read-only', ticketId: 't', requestId: 'r' })
+  expect(prompt).toContain('工作状态、需要确认、工单回执三项仍必须保留')
+  const result = '工作状态：受阻\n\n需要讨论方案。\n\n需要确认：选择哪一个？'
+  expect(() => parseDesktopReport(result, 't', 'r')).toThrow('最终回复缺少匹配的工单回执行')
+  expect(parseDesktopReport(result + '\n工单回执：' + desktopReceiptToken('t', 'r'), 't', 'r'))
+    .toMatchObject({ state: 'blocked', question: '选择哪一个？' })
+})
 
 it('sends the original requirement once, with a short title, actual permission and compact non-authorizing references', () => {
   const text = reference + '修复文件夹排序\n保持其他搜索结果可用。'

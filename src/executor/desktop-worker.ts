@@ -168,9 +168,12 @@ export class DesktopWorker implements NativeWorkerDriver {
       if (receipt.baselineTurnId === turn.id && receipt.baselineStatus === 'completed' || receipt.baselineMessageId === job.final.id) return
       let report
       try { report = parseDesktopReport(job.final.text, job.ticket.id, requestId) }
-      catch {
+      catch (error) {
         // A direct user's later conversation is never silently imported as this work's result.
-        this.uncertain(job, '桌面已回复，但没有本工单的匹配结果回执；请在桌面核对，DSH 不会冒充完成或重发。'); return
+        const missingReceipt = error instanceof Error && error.message.startsWith('DESKTOP_REPORT_RECEIPT_MISMATCH')
+        this.uncertain(job, missingReceipt
+          ? 'DESKTOP_REPORT_RECEIPT_MISMATCH：桌面已回复，但最终回复缺少匹配的工单回执行，或回执后仍有文字。请在原会话核对结果并补齐回执，避免重复执行。'
+          : 'CODEX_INVALID_FINAL_REPORT：桌面已回复，工作状态、正文、需要确认三段格式不符。请在原会话核对并补齐格式。'); return
       }
       job.reportedMessageId = job.final.id
       const normalized = { state: report.state, summary: report.summary, ...(report.question ? { question: report.question } : {}) }

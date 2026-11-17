@@ -3,6 +3,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { createPortal } from 'react-dom'
 import { caller, usePoll, type ApiMessages, type Call, type SetupView, type StateView } from './api.ts'
 import type { Route } from './route.ts'
+import type { CodexThread } from './codex-workspace-store.ts'
 import STYLES from './client.css?raw'
 import NATIVE_CONTROLS from './native-controls.css?raw'
 import { errorText, setupText, valueLabel, type T } from './text.ts'
@@ -14,6 +15,7 @@ export interface PanelContext {
   back: () => void
   backLabel: string
   openSession: (sessionId: string) => Promise<void>
+  openCodex?: (thread: CodexThread) => void
   notify: (text: string) => void
   restart: () => void
 }
@@ -72,9 +74,9 @@ function Toast({ text, onDone, holdMs = 3000 }: { text: string; onDone: () => vo
 }
 const stay = () => {}
 const noSession = async () => {}
-export function PanelProvider({ t, interval = 5000, openSession = noSession, navigate = stay, back = stay, backLabel = '', children }: {
+export function PanelProvider({ t, interval = 5000, openSession = noSession, openCodex, navigate = stay, back = stay, backLabel = '', children }: {
   t: T; interval?: number; openSession?: (sessionId: string) => Promise<void>; navigate?: PanelContext['navigate']; back?: () => void
-  backLabel?: string
+  backLabel?: string; openCodex?: PanelContext['openCodex']
   children: ReactNode
 }) {
   // Read the current translator via ref so locale changes do not recreate `call` and restart polling.
@@ -97,8 +99,8 @@ export function PanelProvider({ t, interval = 5000, openSession = noSession, nav
     const timer = setTimeout(() => setRestarting(undefined), 30_000)
     return () => clearTimeout(timer)
   }, [restarting])
-  const context = useMemo(() => ({ t, call, navigate, back, backLabel, openSession, notify, restart }), [t, call, navigate, back, backLabel,
-    openSession, notify, restart])
+  const context = useMemo(() => ({ t, call, navigate, back, backLabel, openSession, openCodex, notify, restart }), [t, call, navigate, back, backLabel,
+    openSession, openCodex, notify, restart])
   const data = useMemo(() => ({ state, error, reload, setup: state?.setup, running: state?.load.running ?? 0, restarts }), [state, error,
     reload, restarts])
   return <Panel.Provider value={context}><PanelState.Provider value={data}>

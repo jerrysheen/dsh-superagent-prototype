@@ -39,12 +39,13 @@ export class DeferredWork {
   private async run() {
     if (!this.host.enabled()) return
     for (const initial of this.list().filter(item => item.state === 'waiting')) {
-      const activity = await this.host.activities.get(initial.request.codexThreadId!)
+      const activity = await this.host.activities.get(initial.request.codexThreadId!).catch(() => undefined)
       if (!this.host.enabled()) return
       // Re-read after awaits: cancellation/new inputs must not be overwritten by this pass.
       const entries = this.list(), row = entries.find(item => item.request.eventId === initial.request.eventId)
       if (!row || row.state !== 'waiting' || !this.host.enabled()) continue
-      if (activity.state !== 'idle' || activity.stale) { row.reason = activity.state === 'unknown' ? 'Waiting: live status unknown' : 'Waiting: ' + activity.state }
+      if (!activity) { row.reason = 'Waiting: indexed session unavailable' }
+      else if (activity.state !== 'idle' || activity.stale) { row.reason = activity.state === 'unknown' ? 'Waiting: live status unknown' : 'Waiting: ' + activity.state }
       else {
         try { this.host.work.submit(row.request); row.state = 'submitted'; row.reason = 'Submitted to original Engine; inspect normal work result' }
         catch { row.reason = 'Normal Source rejected or submission uncertain; same event ID retained' }

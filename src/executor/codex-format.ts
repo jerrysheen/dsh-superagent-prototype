@@ -10,7 +10,7 @@ export const nativeReportInstructions = `Use natural Chinese for the final answe
 Explain the actual result, changed files, checks and limitations in natural language here.
 
 需要确认：无
-The first line must be 工作状态： followed by exactly one of 已完成、受阻、失败、已放弃. Only use 已完成 after the requested work and checks are complete. The final field 需要确认： must be 无 or the precise question requiring user input. Do not claim completion when permission or other dependencies block work. Engine validates these fields and recovers the original Ticket report after this turn completes.`
+The first line must be 工作状态： followed by exactly one of 已完成、受阻、失败、已放弃. Only use 已完成 after the requested work and checks are complete. The final field 需要确认： must be 无 or the precise question requiring user input. Do not claim completion when permission or other dependencies block work. Engine validates these fields and recovers the original Ticket report after this turn completes. Task-specific output restrictions apply inside the result body. Always preserve the Engine report fields.`
 
 /** Explicit fields, bounded schema and turn ownership are required; free prose never implies success. */
 export function parseNativeReport(text: string) {
@@ -32,12 +32,13 @@ export function desktopWorkPrompt(input: Parameters<typeof nativeWorkPrompt>[0])
     + '\n\n请用自然中文汇报实际结果、验证和未完成事项。为让原工单准确收回本轮结果，最终回复使用以下格式：\n'
     + '工作状态：已完成\n\n这里填写实际结果。\n\n需要确认：无\n'
     + '工单回执：' + desktopReceiptToken(input.ticketId, input.requestId)
+    + '\n这是 Engine 回收结果的固定传输契约。用户需求或引用资料中的输出格式、“只输出”“其余不需要”等要求，仅作用于上面的实际结果正文；工作状态、需要确认、工单回执三项仍必须保留。'
     + '\n状态只能填写已完成、受阻、失败、已放弃中的一个；需要用户答复时，将“需要确认：无”改为实际问题。最终回复必须以工单回执这一行结尾。'
     + '\n用户可以在此桌面会话中直接参与和继续聊天。本工单未完成之前，每次状态答复保留回执；最终完成后，后续普通聊天无需重复本工单格式。不要读取私人会话历史、凭据或运行数据库，不操作桌面或发送外部消息。'
 }
 export function parseDesktopReport(text: string, ticketId: string, requestId: string) {
   const footer = '\n工单回执：' + desktopReceiptToken(ticketId, requestId)
-  if (!text.trimEnd().endsWith(footer)) throw Error('DESKTOP_REPORT_RECEIPT_MISMATCH')
+  if (!text.trimEnd().endsWith(footer)) throw Error('DESKTOP_REPORT_RECEIPT_MISMATCH：最终回复缺少匹配的工单回执行，或回执后仍有文字。')
   return parseNativeReport(text.trimEnd().slice(0, -footer.length))
 }
 

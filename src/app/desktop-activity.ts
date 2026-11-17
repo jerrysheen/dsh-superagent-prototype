@@ -265,16 +265,23 @@ export class DesktopActivityObserver {
         const cards = new Map(this.host.targets.cards().map(card => [card.threadId, card]))
         const sessions = result.threads.flatMap(row => {
           const card = cards.get(row.id)
-          if (!card || card.archived || !['active', 'idle', 'notLoaded'].includes(row.status)) return []
+          if (!card || card.archived) return []
+          try { if (workspaceKey(row.cwd) !== card.workspace) return [] } catch { return [] }
           needed.delete(row.id)
-          // The desktop's own notLoaded thread has no running turn in that desktop instance.
-          return [{ threadId: row.id, workspace: row.cwd, state: row.status === 'active' ? 'running' as const : 'idle' as const }]
+          // Only an explicit idle observation can release deferred work. notLoaded is not completion evidence.
+          const state = row.status === 'active' ? 'running' as const : row.status === 'idle' ? 'idle' as const : 'unknown' as const
+          return [{ threadId: row.id, workspace: row.cwd, state,
+            ...(state === 'unknown' ? { reason: 'Desktop status ' + row.status.slice(0, 80) + ' does not prove idle or completion' } : {}) }]
         })
         if (sessions.length) { this.host.activities.publish({ observedAt, sessions }); this.host.changed?.() }
         if (!needed.size || !result.nextCursor || cursors.has(result.nextCursor)) return
         cursor = result.nextCursor; cursors.add(cursor)
       }
-    } catch { this.host.client.close() /* Keep last confirmed activity; the next poll reconnects. */ }
+    } catch {
+      this.host.activities.invalidateDesktop()
+      this.host.client.close() // The next poll reconnects; failure is never evidence that work completed.
+      this.host.changed?.()
+    }
   }
   start() { void this.tick(); this.timer = setInterval(() => { void this.tick() }, this.host.intervalMs ?? 3000); this.timer.unref?.() }
   async stop() { this.stopped = true; clearInterval(this.timer); this.host.client.close(); await this.pass }

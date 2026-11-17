@@ -54,6 +54,21 @@ it('never interprets cross-process notLoaded as idle and marks retained desktop 
   expect(h.activities.snapshot([id])[0]).toMatchObject({ state: 'idle', stale: true })
   expect(h.probe).not.toHaveBeenCalled()
 })
+it('isolates removed and archived sidebar targets without weakening exact-session checks', async () => {
+  const h = fixture(), removed = '01a1aac1-2431-70f1-bb9b-f93a8a70b241'
+  h.publish('running')
+  expect(h.activities.snapshot([id, removed])).toMatchObject([
+    { threadId: id, state: 'running', stale: false },
+    { threadId: removed, state: 'unknown', source: 'unavailable', stale: true },
+  ])
+  expect(h.activities.watched()).toEqual([id])
+  await expect(h.activities.get(removed)).rejects.toThrow('Unknown or archived indexed session')
+  const card = h.targets.card('codex:' + id)!
+  vi.spyOn(h.targets, 'card').mockReturnValue({ ...card, archived: true })
+  expect(h.activities.snapshot([id])[0]).toMatchObject({ threadId: id, workspace, state: 'unknown', stale: true })
+  expect(h.activities.watched()).toEqual([])
+  await expect(h.activities.get(id)).rejects.toThrow('Unknown or archived indexed session')
+})
 it('rejects unknown targets, mismatched workspaces, future timestamps and out-of-order observations atomically', () => {
   const h = fixture(); h.publish('running')
   const payload = { observedAt: '2026-11-04T08:00:00Z', sessions: [{ threadId: id, workspace: 'F:\\Other', state: 'idle' }] }
@@ -84,6 +99,21 @@ it('keeps the original event ID after uncertain Source delivery and rejects writ
   expect(h.submit.mock.calls.map(call => call[0].eventId)).toEqual([h.request.eventId, h.request.eventId])
   expect(() => h.gate.enqueue({ request: { ...h.request, permission: 'workspace-write', writeAuthorization: 'EXPLICIT_WORKSPACE_WRITE' }, confirmed: true })).toThrow(/read-only/)
   expect(() => h.gate.enqueue({ request: h.request, confirmed: false })).toThrow()
+})
+it('keeps a removed deferred target waiting while allowing an independent valid input to proceed', async () => {
+  const h = fixture(), other = '01a1aac1-2431-70f1-bb9b-f93a8a70b241', known = new Set([id, other])
+  const card = h.targets.card('codex:' + id)!
+  vi.spyOn(h.targets, 'card').mockImplementation(uid => known.has(uid.slice('codex:'.length)) ? card : undefined)
+  const next = { ...h.request, eventId: 'second-ui-readonly', workId: 'second-ui-review', codexThreadId: other }
+  h.gate.enqueue({ request: h.request, confirmed: true }); h.gate.enqueue({ request: next, confirmed: true })
+  h.activities.publish({ observedAt: '2026-11-04T08:00:00.000Z', sessions: [{ threadId: other, workspace, state: 'idle' }] })
+  known.delete(id)
+  await h.gate.tick()
+  expect(h.submit).toHaveBeenCalledOnce(); expect(h.submit).toHaveBeenCalledWith(expect.objectContaining(next))
+  expect(h.gate.list().map(row => ({ state: row.state, eventId: row.request.eventId }))).toEqual([
+    { state: 'waiting', eventId: h.request.eventId }, { state: 'submitted', eventId: next.eventId },
+  ])
+  expect(h.gate.list()[0]?.reason).toBe('Waiting: indexed session unavailable')
 })
 it('does not deliver a cancelled input after an asynchronous status read finishes', async () => {
   const h = fixture(), pending = Promise.withResolvers<{ cwd: string; status: { type: string } }>()

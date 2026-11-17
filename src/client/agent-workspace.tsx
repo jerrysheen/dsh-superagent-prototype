@@ -8,6 +8,7 @@ import { When } from './widgets.tsx'
 import { readableMarkers } from './text.ts'
 import { CloudWorkerSection } from './cloud-workers.tsx'
 import { ManagedWorkPanel } from './managed-work.tsx'
+import { CodexSessionButton } from './codex-session-button.tsx'
 
 function owner(ticket: TicketRow): string {
   if (ticket.nativeThreadId) return 'Codex'
@@ -31,6 +32,7 @@ function WorkDetails({ ticket }: { ticket: TicketRow }) {
           <dt>会话管理</dt><dd>{data.executionTransport === 'desktop' ? data.desktopTracking === 'detached' ? 'DSH 已停止跟踪；请在桌面管理或停止任务' : '由桌面管理，DSH 不占用；可参与和接续' : data.nativeWriter?.state === 'released' ? '已释放，可在桌面接续' : data.nativeWriter?.state === 'releasing' ? '正在释放'
             : data.nativeWriter?.state === 'held' && data.stage === 'working' ? '正在执行；完成后自动释放，随后可在桌面接续' : '占用状态待确认'}</dd></>}
       </dl>
+      {data.nativeThreadId && <CodexSessionButton threadId={data.nativeThreadId} />}
       {data.summary && <p className="sa-work-report">{data.summary}</p>}
       {data.attention && <p className="sa-work-report">{data.attention.question}</p>}
       {!!data.threads.length && <div className="sa-work-threads">{data.threads.map(thread => <span key={thread.key}>{thread.title}</span>)}</div>}

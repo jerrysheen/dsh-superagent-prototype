@@ -7,7 +7,13 @@ export const CodexQuestionSchema = z.object({
   question: z.string().trim().max(8000), confirmed: z.literal(true), images: z.array(z.string().uuid()).max(4).optional(),
 }).strict().refine(value => !!value.question || !!value.images?.length, '请填写消息或添加图片。')
 export type CodexQuestion = z.infer<typeof CodexQuestionSchema>
-export interface CodexReply { threadId: string; turnId: string; status: 'completed'; text: string; queueId?: string; receiptId?: string; transport?: 'desktop_queue' | 'desktop_app' | 'native_image_queue' }
+export type CodexTransport = 'desktop_queue' | 'desktop_app' | 'native_image_queue' | 'native_user_queue'
+/** A transport acknowledgment proves acceptance into a queue, not that its desktop writer has consumed it. */
+export interface CodexDelivery { queueId?: string; receiptId?: string; clientUserMessageId?: string; transport: CodexTransport }
+export type CodexQueued = (delivery: CodexDelivery) => void
+export interface CodexReply extends Partial<CodexDelivery> { threadId: string; turnId: string; status: 'completed'; text: string }
+export interface CodexRequestState { status: 'pending' | 'completed' | 'uncertain'; delivery?: CodexDelivery; reply?: CodexReply; error?: string }
+export type CodexRunner = (question: CodexQuestion, onQueued?: CodexQueued) => Promise<CodexReply>
 /** Carries a native-thread transport error code, stage and caller-facing diagnostic. */
 export class CodexRelayError extends Error {
   constructor(readonly code: string, readonly stage: string, message: string) { super(message) }
@@ -18,9 +24,11 @@ export const continueCodex = continueDesktopCodex
 
 /** Dispatches explicitly authorized native questions through the configured transport. */
 export class CodexRelay {
-  private readonly requests = new Map<string, { body: string; result: Promise<CodexReply>; state?: { status: string; reply?: CodexReply; error?: string } }>()
+  private readonly requests = new Map<string, { body: string; result: Promise<CodexReply>; state: CodexRequestState }>()
   private readonly busy = new Set<string>()
-  constructor(private readonly allowed: readonly string[] | (() => readonly string[]), private readonly run = continueCodex, private readonly transport: 'desktop_queue' | 'desktop_app' = 'desktop_queue') {}
+  constructor(private readonly allowed: readonly string[] | (() => readonly string[]),
+    private readonly run: CodexRunner = (question, onQueued) => continueCodex(question, { onQueued }),
+    private readonly transport: CodexTransport = 'desktop_queue') {}
   private ids() { return typeof this.allowed === 'function' ? this.allowed() : this.allowed }
   capabilities() { const ids = this.ids(); return { enabled: ids.length > 0, allowedThreadIds: ids, transport: this.transport } }
   status(requestId: string) {
@@ -37,11 +45,15 @@ export class CodexRelay {
     if (this.busy.has(question.threadId)) throw new Error('此会话已有 DSH 提问正在处理。')
     if (this.requests.size >= 100) throw new Error('试点请求达到上限，请核对已发送记录后重启连接。')
     this.busy.add(question.threadId)
-    const result = Promise.resolve().then(() => this.run(question)).finally(() => this.busy.delete(question.threadId))
-    const record = { body, result, state: { status: 'pending' } as { status: string; reply?: CodexReply; error?: string } }
+    const onQueued: CodexQueued = delivery => {
+      const record = this.requests.get(question.requestId)
+      if (record?.state.status === 'pending') record.state = { status: 'pending', delivery: { ...delivery } }
+    }
+    const result = Promise.resolve().then(() => this.run(question, onQueued)).finally(() => this.busy.delete(question.threadId))
+    const record = { body, result, state: { status: 'pending' } as CodexRequestState }
     this.requests.set(question.requestId, record)
-    void result.then(reply => { record.state = { status: 'completed', reply } }, error => {
-      record.state = { status: 'uncertain', error: error instanceof Error ? error.message : '发送结果未知，请检查原会话。' }
+    void result.then(reply => { record.state = { ...record.state, status: 'completed', reply } }, error => {
+      record.state = { ...record.state, status: 'uncertain', error: error instanceof Error ? error.message : '发送结果未知，请检查原会话。' }
     })
     return result
   }

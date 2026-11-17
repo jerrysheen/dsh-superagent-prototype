@@ -7,6 +7,7 @@ import { SessionHub } from '../src/app/session-hub.ts'
 import { ContextCatalog } from '../src/app/context-catalog.ts'
 import { ContextTargets } from '../src/app/context-targets.ts'
 import { ChatgptSource } from '../src/app/chatgpt-source.ts'
+import { CodexRelay } from '../src/app/codex-relay.ts'
 import { registerSessionHub } from '../src/app/session-hub-http.ts'
 import type { RoutingInput, SessionRouting } from '../src/app/session-router.ts'
 
@@ -103,7 +104,7 @@ it('imports Codex session metadata into the catalog, not the SessionHub task boa
   let handler: Handler = async () => {}
   const context = { webServer: { host: '127.0.0.1', port: 3082,
     register: (route: { handler: Handler }) => { handler = route.handler; return () => {} } } }
-  registerSessionHub(context as never, hub, catalog, router)
+  registerSessionHub(context as never, hub, catalog, router, undefined, new CodexRelay([]))
   const call = async (method: string, path: string, value?: unknown, headers: Record<string, string | undefined> = {}) => {
     let status = 0, body = '', contentType = ''
     const request = { method, url: '/session-hub/api/' + path, headers: {

@@ -21,14 +21,14 @@ import { When } from './widgets.tsx'
 import { LocalWorkInput } from './local-work-input.tsx'
 import { LocalWorkHistory } from './local-work-history.tsx'
 import { KnowledgeGraphWindow } from './knowledge-graph.tsx'
-import type { KnowledgeNode } from '../app/knowledge-graph.ts'
+import type { CodexThread } from './codex-workspace-store.ts'
 import { KnowledgeLibraryWindow } from './knowledge-library.tsx'
 import { AgentWorkspace } from './agent-workspace.tsx'
 
 export interface AppProps {
   t: T; openSession: (sessionId: string) => Promise<void>
   deploymentForm: DeploymentForm
-  openCodex?: (thread: KnowledgeNode) => void
+  openCodex?: (thread: CodexThread) => void
   renderChat?: (id: string, prepare: () => Promise<{ sessionId: string }>) => ReactNode
 }
 
@@ -213,7 +213,7 @@ export function App({ t, openSession, deploymentForm, openCodex, renderChat }: A
   const back = useCallback(() => move(current => ({ route: current.stack.at(-1) ?? HOME, stack: current.stack.slice(0, -1) })), [move])
   const openTab = useCallback((tab: Tab) => move(current => ({ stack: [], route: tab === 'settings'
     ? settingsRoute(lastSettingsGroup(current)) : { page: tab, id: undefined } })), [move])
-  return <PanelProvider t={t} openSession={openSession} navigate={navigate} back={back} backLabel={routeLabel(t, location.stack.at(-1) ?? HOME)}>
+  return <PanelProvider t={t} openSession={openSession} openCodex={openCodex} navigate={navigate} back={back} backLabel={routeLabel(t, location.stack.at(-1) ?? HOME)}>
     <Pages route={location.route} openTab={openTab} deploymentForm={deploymentForm} openCodex={openCodex} renderChat={renderChat} />
   </PanelProvider>
 }
