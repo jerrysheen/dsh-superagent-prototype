@@ -81,11 +81,20 @@ export function CloudWorkerSection() {
   const { data, error, reload } = usePoll(() => api<View>(), [])
   const [manage, setManage] = useState(false), [compose, setCompose] = useState(false)
   const [workerId, setWorkerId] = useState(''), [question, setQuestion] = useState(''), [busy, setBusy] = useState(false), [failure, setFailure] = useState('')
+  // A direct human Submit is already explicit permission for this exact selected ChatGPT thread.
+  // Do not ask the same user to confirm a second time. Bot-authored questions still use
+  // prepare_cloud_question and the existing independent confirmation card.
   async function prepare(event: FormEvent) {
     event.preventDefault(); if (busy || !workerId || !question.trim()) return
     setBusy(true); setFailure('')
-    try { await api('/prepare', 'POST', { workerId, question, requestId: crypto.randomUUID() }); setQuestion(''); setCompose(false); await reload() }
-    catch (failure) { setFailure(String(failure)) } finally { setBusy(false) }
+    try {
+      const draft = await api<CloudMessageReceipt>('/prepare', 'POST', { workerId, question, requestId: crypto.randomUUID() })
+      const receipt = await api<CloudMessageReceipt>('/messages/' + draft.id + '/send', 'POST', { confirmed: true })
+      setQuestion(''); setCompose(false)
+      if (receipt.state === 'uncertain') setFailure('已发起云端发送，但回执不确定；请在原目标会话核对，系统不会自动重发。')
+      await reload()
+    } catch (failure) { setFailure(String(failure)); await reload().catch(() => {}) }
+    finally { setBusy(false) }
   }
   return <section className="sa-cloud-section" aria-label="云端问答 Worker">
     <header className="sa-work-head"><h2>云端问答</h2><button type="button" className="dt-textlink" onClick={() => setManage(value => !value)} aria-expanded={manage}>管理 Worker</button></header>
@@ -94,12 +103,13 @@ export function CloudWorkerSection() {
       {!data.connected && <p className="dt-hint">桌面连接器未连接，暂不能发送。</p>}
       {manage && <WorkerManager workers={data.workers} reload={reload} />}
       {!data.workers.length && !manage && <button type="button" className="dt-textlink" onClick={() => setManage(true)}>＋ 添加 ChatGPT 云端 Worker</button>}
-      {!!data.workers.length && <Button size="sm" variant="ghost" onClick={() => setCompose(value => !value)}>＋ 准备一个问题</Button>}
+      {!!data.workers.length && <Button size="sm" variant="ghost" onClick={() => setCompose(value => !value)}>＋ 发送问题</Button>}
       {compose && <form onSubmit={event => { void prepare(event) }} className="sa-cloud-form">
         <label className="dt-field">交给谁<select required value={workerId} onChange={event => setWorkerId(event.target.value)}><option value="">选择云端 Worker</option>
           {data.workers.map(worker => <option key={worker.id} value={worker.id} disabled={!worker.available}>{worker.name}{!worker.available ? ' · 不可用' : ''}</option>)}</select></label>
         <label className="dt-field">问题<textarea required className="dt-textarea" rows={3} maxLength={8000} value={question} onChange={event => setQuestion(event.target.value)} /></label>
-        <Button type="submit" size="sm" disabled={busy}>准备发送</Button></form>}
+        <p className="dt-hint">你亲自点发送，就只对选定的 ChatGPT 原会话与本条文字授权一次。不会把权限授予 Chief 或其它会话；提交不代表已经得到回答。</p>
+        <Button type="submit" size="sm" disabled={busy}>{busy ? '发送中…' : '发送到指定 ChatGPT 会话'}</Button></form>}
       {failure && <p className="dt-error" role="alert">{failure}</p>}
       {[...data.receipts].reverse().filter(item => item.state !== 'cancelled').map(item => <MessageReceipt key={item.id} item={item} connected={data.connected} reload={reload} />)}
     </>}
